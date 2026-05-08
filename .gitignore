@@ -1,0 +1,31 @@
+# ROS2 build outputs
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+
+# Logs
+*.log
+logs/
+
+# Large external references are local only by default
+references/*/.git/
+
+# PX4 and external dependencies should not be copied here
+PX4-Autopilot/
+Micro-XRCE-DDS-Agent/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
