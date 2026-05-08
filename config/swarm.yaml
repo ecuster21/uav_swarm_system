@@ -1,0 +1,68 @@
+swarm:
+  publish_rate_hz: 5.0
+  state_timeout_sec: 2.0
+  frame_id: local_enu
+  leader_id: uav_1
+  follower_ids:
+    - uav_2
+    - uav_3
+  drones:
+    - id: uav_1
+      namespace: uav_1
+      role: leader
+      system_id: 2
+      mavlink_udp_port: 14541
+      mavsdk_server_port: 50051
+      px4_topic_prefix: px4_1
+      initial_position: [0.0, 0.0, 1.0]
+    - id: uav_2
+      namespace: uav_2
+      role: follower
+      system_id: 3
+      mavlink_udp_port: 14542
+      mavsdk_server_port: 50052
+      px4_topic_prefix: px4_2
+      initial_position: [-2.0, -1.5, 1.0]
+    - id: uav_3
+      namespace: uav_3
+      role: follower
+      system_id: 4
+      mavlink_udp_port: 14543
+      mavsdk_server_port: 50053
+      px4_topic_prefix: px4_3
+      initial_position: [-2.0, 1.5, 1.0]
+
+backend:
+  default_type: mock
+  supported_types:
+    - mock
+    - mavsdk
+    - uxrce_dds
+
+mock_backend:
+  state_rate_hz: 10.0
+  max_speed_m_s: 1.5
+  takeoff_altitude_m: 2.5
+
+mavsdk_backend:
+  state_rate_hz: 5.0
+  auto_connect: true
+  connection_timeout_sec: 10.0
+  command_timeout_sec: 8.0
+  health_required: true
+  takeoff_altitude_m: 2.5
+  telemetry_rate_hz: 5.0
+  connection_url_template: "udpin://0.0.0.0:{mavlink_udp_port}"
+  goto_min_interval_sec: 2.0
+  goto_position_tolerance_m: 0.5
+  target_wait_log_interval_sec: 5.0
+  formation_target_mode: goto
+  port_assumption: "PX4 v1.14.4 px4-rc.mavlink uses udp_offboard_port_remote=14540+px4_instance and MAV_SYS_ID=px4_instance+1. The stock gazebo-classic/sitl_multiple_run.sh starts instances with -i 1..N, so the first three MAVSDK ports are 14541,14542,14543 and system IDs are 2,3,4. This is different from the Gazebo model mavlink_udp_port=14560+instance."
+
+uxrce_backend:
+  state_rate_hz: 10.0
+  offboard_rate_hz: 20.0
+  enable_offboard_from_target: true
+  offboard_warmup_cycles: 10
+  takeoff_altitude_m: 2.5
+  topic_assumption: "PX4 v1.14.4 rcS starts uxrce_dds_client with namespace px4_$px4_instance for nonzero multi-instance SITL. The stock gazebo-classic/sitl_multiple_run.sh starts instances 1..N, so topics are /px4_1/fmu/*, /px4_2/fmu/*, /px4_3/fmu/*."

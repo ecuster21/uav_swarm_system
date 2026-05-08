@@ -1,0 +1,38 @@
+frame:
+  command_frame: local_enu
+  px4_internal_frame: local_ned
+  conversion: "ROS targets use ENU: x=east, y=north, z=up. PX4 local position uses NED: x=north, y=east, z=down. Bridge conversion: enu.x=ned.y, enu.y=ned.x, enu.z=-ned.z."
+
+controller:
+  default_formation_type: triangle
+  control_rate_hz: 2.0
+  waypoint_acceptance_radius_m: 0.45
+  leader_state_timeout_sec: 3.0
+
+safety:
+  max_speed_m_s: 1.5
+  max_altitude_m: 5.0
+  min_altitude_m: 0.5
+  min_inter_drone_distance_m: 1.2
+
+formations:
+  triangle:
+    description: "Leader in front, followers behind-left and behind-right."
+    offsets:
+      uav_1: [0.0, 0.0, 0.0]
+      uav_2: [-2.0, -1.5, 0.0]
+      uav_3: [-2.0, 1.5, 0.0]
+
+  line:
+    description: "Line abreast in ENU y-axis, centered on the leader."
+    offsets:
+      uav_1: [0.0, 0.0, 0.0]
+      uav_2: [0.0, -2.0, 0.0]
+      uav_3: [0.0, 2.0, 0.0]
+
+  column:
+    description: "Single-file column behind the leader in ENU x-axis."
+    offsets:
+      uav_1: [0.0, 0.0, 0.0]
+      uav_2: [-2.0, 0.0, 0.0]
+      uav_3: [-4.0, 0.0, 0.0]

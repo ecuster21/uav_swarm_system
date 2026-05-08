@@ -1,0 +1,9 @@
+leader_waypoints:
+  frame: local_enu
+  loop: true
+  yaw: 0.0
+  points:
+    - [0.0, 0.0, 2.0]
+    - [4.0, 0.0, 2.0]
+    - [4.0, 4.0, 2.0]
+    - [0.0, 4.0, 2.0]

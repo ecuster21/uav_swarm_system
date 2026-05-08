@@ -136,6 +136,58 @@
 
 ---
 
+## Python / C++ 使用规则
+
+本项目同时允许 Python 和 C++，但必须按模块职责选择语言，不允许随意决定。
+
+### 优先使用 Python 的情况
+
+以下模块优先使用 Python：
+
+1. 任务分配：`task_allocator`
+2. 区域覆盖路径规划：`coverage_planner`
+3. 任务编排：`mission_manager`
+4. 地面站后端：`ground_station/backend`
+5. 启动脚本、测试脚本、日志分析脚本
+6. 算法原型验证
+7. MAVSDK 快速验证脚本
+8. 低频状态管理节点，例如 1Hz 到 10Hz 的管理逻辑
+
+原因：
+- 开发快
+- 易调试
+- 方便算法迭代
+- 适合业务逻辑和任务逻辑
+
+### 优先使用 C++ 的情况
+
+以下模块优先使用 C++：
+
+1. `px4_bridge` 的核心通信后端
+2. uXRCE-DDS / `px4_msgs` 通信节点
+3. 高频 Offboard setpoint 发布节点
+4. `formation_controller` 编队控制核心
+5. `collision_avoidance` 避障核心
+6. `safety_monitor` 安全监控节点
+7. 状态融合、滤波、高频控制节点
+8. 频率高于 20Hz 的闭环控制节点
+
+原因：
+- 更适合高频控制
+- 延迟更稳定
+- 更适合多线程和真机部署
+- 更适合飞控相关核心模块
+
+### 允许的开发策略
+
+1. 一旦模块进入 PX4 真通信、Offboard 控制、高频闭环控制，应优先改为 C++。
+2. Python 节点可以调用 C++ 节点提供的 ROS2 topic/service/action。
+3. 不要为了方便把所有东西都写成 Python。
+4. 不要为了“工程化”把所有东西都写成 C++。
+5. 每次新增模块前，必须说明选择 Python 或 C++ 的理由。
+
+---
+
 ## 推荐目录结构
 
 ```text

@@ -19,6 +19,9 @@ fi
 
 cd "$PX4_DIR"
 
+echo "Stopping stale PX4/Gazebo processes before launch..."
+"$UAV_SWARM_ROOT/scripts/stop_sitl_stack.sh"
+
 echo "Starting PX4 multi-vehicle SITL..."
 echo "Vehicle count: $VEHICLE_COUNT"
 echo "Model: $MODEL"
