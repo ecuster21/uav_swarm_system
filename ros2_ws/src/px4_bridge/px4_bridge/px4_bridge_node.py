@@ -1,4 +1,4 @@
-from math import sqrt
+from contextlib import suppress
 from typing import Sequence
 
 import rclpy
@@ -8,7 +8,6 @@ from std_srvs.srv import Trigger
 from swarm_msgs.msg import DroneState, FormationTarget
 
 from px4_bridge.backend_base import CommandResult
-from px4_bridge.mavsdk_backend import MavsdkBackend
 from px4_bridge.mock_backend import MockBackend
 
 
@@ -37,24 +36,11 @@ class Px4Bridge(Node):
         self.declare_parameter("role", "unknown")
         self.declare_parameter("backend_type", "mock")
         self.declare_parameter("frame_id", "local_enu")
-        self.declare_parameter("system_id", 1)
-        self.declare_parameter("mavlink_udp_port", 14540)
-        self.declare_parameter("mavsdk_server_port", 50051)
         self.declare_parameter("initial_position", [0.0, 0.0, 0.0])
         self.declare_parameter("state_rate_hz", 10.0)
         self.declare_parameter("max_speed_m_s", 1.5)
         self.declare_parameter("auto_connect", True)
-        self.declare_parameter("connection_timeout_sec", 10.0)
-        self.declare_parameter("command_timeout_sec", 8.0)
-        self.declare_parameter("health_required", True)
         self.declare_parameter("takeoff_altitude_m", 2.5)
-        self.declare_parameter("telemetry_rate_hz", 5.0)
-        self.declare_parameter(
-            "connection_url_template", "udpin://0.0.0.0:{mavlink_udp_port}"
-        )
-        self.declare_parameter("goto_min_interval_sec", 2.0)
-        self.declare_parameter("goto_position_tolerance_m", 0.5)
-        self.declare_parameter("target_wait_log_interval_sec", 5.0)
 
         self.drone_id = self.get_parameter("drone_id").value
         self.drone_namespace = self.get_parameter("drone_namespace").value
@@ -62,19 +48,9 @@ class Px4Bridge(Node):
         self.backend_type = str(self.get_parameter("backend_type").value).lower()
         self.frame_id = str(self.get_parameter("frame_id").value)
         self.state_rate_hz = float(self.get_parameter("state_rate_hz").value)
-        self.goto_min_interval_sec = float(
-            self.get_parameter("goto_min_interval_sec").value
-        )
-        self.goto_position_tolerance_m = float(
-            self.get_parameter("goto_position_tolerance_m").value
-        )
-        self.target_wait_log_interval_sec = float(
-            self.get_parameter("target_wait_log_interval_sec").value
-        )
         self.last_target: FormationTarget | None = None
         self.last_command_target: FormationTarget | None = None
         self.last_command_time = None
-        self.last_target_wait_log_time = None
 
         initial_position = _as_three_floats(self.get_parameter("initial_position").value)
         self.backend = self._create_backend(initial_position)
@@ -107,27 +83,8 @@ class Px4Bridge(Node):
                 max_speed_m_s=float(self.get_parameter("max_speed_m_s").value),
                 takeoff_altitude_m=float(self.get_parameter("takeoff_altitude_m").value),
             )
-        if self.backend_type == "mavsdk":
-            return MavsdkBackend(
-                mavlink_udp_port=int(self.get_parameter("mavlink_udp_port").value),
-                mavsdk_server_port=int(
-                    self.get_parameter("mavsdk_server_port").value
-                ),
-                system_id=int(self.get_parameter("system_id").value),
-                initial_position=initial_position,
-                connection_timeout_sec=float(
-                    self.get_parameter("connection_timeout_sec").value
-                ),
-                command_timeout_sec=float(self.get_parameter("command_timeout_sec").value),
-                health_required=bool(self.get_parameter("health_required").value),
-                takeoff_altitude_m=float(self.get_parameter("takeoff_altitude_m").value),
-                telemetry_rate_hz=float(self.get_parameter("telemetry_rate_hz").value),
-                connection_url_template=str(
-                    self.get_parameter("connection_url_template").value
-                ),
-            )
         self.get_logger().warning(
-            f"Unsupported backend_type '{self.backend_type}', falling back to mock"
+            f"Unsupported mock bridge backend_type '{self.backend_type}', falling back to mock"
         )
         self.backend_type = "mock"
         return MockBackend(
@@ -150,10 +107,6 @@ class Px4Bridge(Node):
             return
         self.last_target = msg
         self.control_target_pub.publish(msg)
-        if not self._ready_for_autonomous_target():
-            return
-        if not self._should_send_target(msg):
-            return
 
         self.last_command_target = msg
         self.last_command_time = self.get_clock().now()
@@ -221,71 +174,20 @@ class Px4Bridge(Node):
         else:
             self.get_logger().warning(f"{label}: {result.message}")
 
-    def _should_send_target(self, msg: FormationTarget) -> bool:
-        if self.backend_type == "mock":
-            return True
-        if self.last_command_target is None:
-            return True
-        if msg.active != self.last_command_target.active:
-            return True
-        if self.last_command_time is None:
-            return True
-
-        elapsed_sec = (
-            self.get_clock().now() - self.last_command_time
-        ).nanoseconds / 1e9
-        if elapsed_sec < self.goto_min_interval_sec:
-            return False
-
-        return (
-            _target_distance(msg, self.last_command_target)
-            >= self.goto_position_tolerance_m
-        )
-
-    def _ready_for_autonomous_target(self) -> bool:
-        if self.backend_type == "mock":
-            return True
-
-        state = self.backend.read_state(0.0)
-        if state.connected and state.healthy:
-            if not state.armed:
-                self._log_target_wait("backend is healthy but vehicle is not armed")
-                return False
-            return True
-
-        reason = "backend is not connected"
-        if state.connected and not state.healthy:
-            reason = f"backend health is not ready: {state.status_text}"
-        self._log_target_wait(reason)
-        return False
-
-    def _log_target_wait(self, reason: str) -> None:
-        now = self.get_clock().now()
-        if self.last_target_wait_log_time is not None:
-            elapsed_sec = (now - self.last_target_wait_log_time).nanoseconds / 1e9
-            if elapsed_sec < self.target_wait_log_interval_sec:
-                return
-        self.last_target_wait_log_time = now
-        self.get_logger().info(
-            f"Waiting before sending autonomous target for {self.drone_id}: {reason}"
-        )
-
-
-def _target_distance(a: FormationTarget, b: FormationTarget) -> float:
-    dx = a.position.x - b.position.x
-    dy = a.position.y - b.position.y
-    dz = a.position.z - b.position.z
-    return sqrt(dx * dx + dy * dy + dz * dz)
-
 
 def main(args: list[str] | None = None) -> None:
     rclpy.init(args=args)
     node = Px4Bridge()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        with suppress(Exception, KeyboardInterrupt):
+            node.destroy_node()
+        with suppress(Exception, KeyboardInterrupt):
+            if rclpy.ok():
+                rclpy.shutdown()
 
 
 if __name__ == "__main__":

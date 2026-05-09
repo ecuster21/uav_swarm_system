@@ -14,14 +14,13 @@ setup(
     zip_safe=True,
     maintainer="jie",
     maintainer_email="jie@example.com",
-    description="PX4 bridge abstraction with mock and MAVSDK SITL backends.",
+    description="Mock bridge for fast ROS2 swarm tests without PX4 runtime dependencies.",
     license="Apache-2.0",
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
             "px4_bridge = px4_bridge.px4_bridge_node:main",
             "mock_px4_bridge = px4_bridge.mock_px4_bridge_node:main",
-            "mavsdk_px4_bridge = px4_bridge.px4_bridge_node:main",
         ],
     },
 )

@@ -1,68 +1,99 @@
+# 集群级配置文件。
+# 作用：定义无人机列表、ROS namespace、PX4 标识、uXRCE-DDS 话题前缀、
+# mock 参数和真实 PX4 uXRCE-DDS bridge 参数。
+
+# 集群逻辑模型，由 swarm_manager、launch 文件和 formation_controller 共同读取。
 swarm:
+  # /swarm/state 的发布频率，单位 Hz。
   publish_rate_hz: 5.0
+
+  # 单机 /uav_N/state 超过该时间未更新时，swarm_manager 会将该无人机标记为不健康。
   state_timeout_sec: 2.0
+
+  # 项目内部统一使用的状态和控制坐标系。
   frame_id: local_enu
+
+  # leader 无人机 ID，formation_controller 会让该飞机按航点飞行。
   leader_id: uav_1
+
+  # follower 无人机 ID 列表，应与 swarm.drones 中的 follower 条目保持一致。
   follower_ids:
     - uav_2
     - uav_3
-  drones:
-    - id: uav_1
-      namespace: uav_1
-      role: leader
-      system_id: 2
-      mavlink_udp_port: 14541
-      mavsdk_server_port: 50051
-      px4_topic_prefix: px4_1
-      initial_position: [0.0, 0.0, 1.0]
-    - id: uav_2
-      namespace: uav_2
-      role: follower
-      system_id: 3
-      mavlink_udp_port: 14542
-      mavsdk_server_port: 50052
-      px4_topic_prefix: px4_2
-      initial_position: [-2.0, -1.5, 1.0]
-    - id: uav_3
-      namespace: uav_3
-      role: follower
-      system_id: 4
-      mavlink_udp_port: 14543
-      mavsdk_server_port: 50053
-      px4_topic_prefix: px4_3
-      initial_position: [-2.0, 1.5, 1.0]
 
+  # 无人机列表。launch 文件会为这里的每架无人机启动一个 bridge 节点。
+  drones:
+    # 项目内部无人机 ID，也用于队形 offset、状态表和日志。
+    - id: uav_1
+      # 该无人机的 ROS namespace，例如 /uav_1/state 和 /uav_1/formation_target。
+      namespace: uav_1
+      # 该无人机在集群中的逻辑角色。
+      role: leader
+      # PX4 MAVLink system id；当前 PX4 SITL instance 1 对应 system_id 2。
+      system_id: 2
+      # PX4 uXRCE-DDS 话题前缀，例如 /px4_1/fmu/out/vehicle_status。
+      px4_topic_prefix: px4_1
+      # 初始 ENU 锚点，用于 bridge 将 PX4 local NED 对齐到项目 local_enu。
+      initial_position: [0.0, 0.0, 1.0]
+
+    # 第二架无人机，当前作为第一个 follower。
+    - id: uav_2
+      # 第二架无人机的 ROS namespace。
+      namespace: uav_2
+      # 该无人机在编队中跟随 leader。
+      role: follower
+      # PX4 SITL instance 2 对应的 MAVLink system id。
+      system_id: 3
+      # PX4 instance 2 的 uXRCE-DDS 话题前缀。
+      px4_topic_prefix: px4_2
+      # 第二架无人机的初始 ENU 锚点。
+      initial_position: [3.0, 0.0, 1.0]
+
+    # 第三架无人机，当前作为第二个 follower。
+    - id: uav_3
+      # 第三架无人机的 ROS namespace。
+      namespace: uav_3
+      # 该无人机在编队中跟随 leader。
+      role: follower
+      # PX4 SITL instance 3 对应的 MAVLink system id。
+      system_id: 4
+      # PX4 instance 3 的 uXRCE-DDS 话题前缀。
+      px4_topic_prefix: px4_3
+      # 第三架无人机的初始 ENU 锚点。
+      initial_position: [0.0, 3.0, 1.0]
+
+# 后端类型说明。真实 PX4 开发主线使用 uXRCE-DDS。
 backend:
+  # 默认后端类型，主要给通用工具或 mock launch 使用。
   default_type: mock
+
+  # 当前项目保留的后端类型。
   supported_types:
+    # 不依赖 PX4/Gazebo 的快速测试后端。
     - mock
-    - mavsdk
+    # 真实 PX4 SITL 和后续真机使用的 px4_msgs/uXRCE-DDS 后端。
     - uxrce_dds
 
+# Python mock bridge 参数，由 swarm_mock.launch.py 使用。
 mock_backend:
+  # 每个 mock 无人机发布 DroneState 的频率，单位 Hz。
   state_rate_hz: 10.0
+  # mock 无人机最大平移速度，单位 m/s。
   max_speed_m_s: 1.5
+  # mock takeoff 的目标高度，单位 m。
   takeoff_altitude_m: 2.5
 
-mavsdk_backend:
-  state_rate_hz: 5.0
-  auto_connect: true
-  connection_timeout_sec: 10.0
-  command_timeout_sec: 8.0
-  health_required: true
-  takeoff_altitude_m: 2.5
-  telemetry_rate_hz: 5.0
-  connection_url_template: "udpin://0.0.0.0:{mavlink_udp_port}"
-  goto_min_interval_sec: 2.0
-  goto_position_tolerance_m: 0.5
-  target_wait_log_interval_sec: 5.0
-  formation_target_mode: goto
-  port_assumption: "PX4 v1.14.4 px4-rc.mavlink uses udp_offboard_port_remote=14540+px4_instance and MAV_SYS_ID=px4_instance+1. The stock gazebo-classic/sitl_multiple_run.sh starts instances with -i 1..N, so the first three MAVSDK ports are 14541,14542,14543 and system IDs are 2,3,4. This is different from the Gazebo model mavlink_udp_port=14560+instance."
-
+# C++ px4_bridge_uxrce 参数，由 swarm_px4_uxrce.launch.py 使用。
 uxrce_backend:
+  # 每个真实 bridge 发布 DroneState 的频率，单位 Hz。
   state_rate_hz: 10.0
+  # OffboardControlMode 和 TrajectorySetpoint 的发布频率，单位 Hz。
   offboard_rate_hz: 20.0
+  # 为 true 时，收到 active FormationTarget 后自动开始 Offboard setpoint 流。
   enable_offboard_from_target: true
+  # 进入 OFFBOARD 前预热发送 setpoint 的周期数。
   offboard_warmup_cycles: 10
+  # PX4 takeoff 命令的目标高度，单位 m。
   takeoff_altitude_m: 2.5
+  # PX4 v1.14.4 多机 SITL 下 uXRCE-DDS 话题命名假设说明。
   topic_assumption: "PX4 v1.14.4 rcS starts uxrce_dds_client with namespace px4_$px4_instance for nonzero multi-instance SITL. The stock gazebo-classic/sitl_multiple_run.sh starts instances 1..N, so topics are /px4_1/fmu/*, /px4_2/fmu/*, /px4_3/fmu/*."

@@ -1,9 +1,22 @@
+# leader 航点配置文件。
+# 作用：定义 leader 无人机的预设航线；formation_controller 会让 leader
+# 按顺序飞这些航点，follower 再根据队形 offset 跟随 leader。
+
+# leader 航点任务配置。
 leader_waypoints:
+  # 航点坐标系；当前必须与 formation_controller 的 command_frame 保持 local_enu。
   frame: local_enu
+  # 为 true 时，到达最后一个航点后重新回到第一个航点循环飞行。
   loop: true
+  # leader 航点目标 yaw，单位 rad；当前所有航点共用同一个 yaw。
   yaw: 0.0
+  # 航点列表，每个点格式为 [x_east, y_north, z_up]，单位 m。
   points:
-    - [0.0, 0.0, 2.0]
-    - [4.0, 0.0, 2.0]
-    - [4.0, 4.0, 2.0]
-    - [0.0, 4.0, 2.0]
+    # 起始航点，高度 2m。
+    - [0.0, 0.0, 10.0]
+    # 向 ENU x 正方向飞到 4m。
+    - [100.0, 0.0, 10.0]
+    # 再向 ENU y 正方向飞到 4m。
+    - [100.0, 100.0, 10.0]
+    # 回到 x=0、y=4 的位置，形成方形航线。
+    - [0.0, 100.0, 10.0]

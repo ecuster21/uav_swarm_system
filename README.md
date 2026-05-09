@@ -16,7 +16,7 @@
 当前推荐验证路径：
 
 - 首选：`px4_bridge_uxrce`，C++ uXRCE-DDS / Offboard 主线。
-- 保留：`px4_bridge` 的 mock 和 Python MAVSDK backend，仅用于低频验证和对照，不作为长期高频飞控核心。
+- 保留：`px4_bridge` 的 mock backend，仅用于无 PX4 的快速 smoke test。
 
 ## 固定环境
 
@@ -50,7 +50,7 @@ uav_swarm_system/
 ├── docs/                   # 架构、路线图、参考项目分析
 ├── ros2_ws/src/
 │   ├── swarm_msgs          # DroneState / SwarmState / FormationTarget
-│   ├── px4_bridge          # Python mock / MAVSDK 验证层
+│   ├── px4_bridge          # Python mock 验证层
 │   ├── px4_bridge_uxrce    # C++ PX4 uXRCE-DDS bridge
 │   ├── swarm_manager       # Python 低频集群状态汇总
 │   └── formation_controller # C++ leader-follower 编队控制
@@ -163,27 +163,9 @@ source scripts/setup_env.sh
 
 注意：
 
-- 不要同时启动多套 `swarm_mock.launch.py`、`swarm_px4_uxrce.launch.py` 或 `swarm_px4_sitl.launch.py`，否则同名节点会互相干扰。
+- 不要同时启动多套 `swarm_mock.launch.py` 或 `swarm_px4_uxrce.launch.py`，否则同名节点会互相干扰。
 - `swarm_land_all.sh` 会先停止 autonomous `formation_controller`，再发布 inactive target，最后调用 `/land`。
 - 如果 Gazebo 或 PX4 端口残留，先运行 `./scripts/stop_sitl_stack.sh`。
-
-## MAVSDK Backend
-
-MAVSDK backend 仍保留，但只作为 Python 低频验证层：
-
-```bash
-cd /home/jie/uav_swarm_system
-source scripts/setup_env.sh
-ros2 launch formation_controller swarm_px4_sitl.launch.py backend_type:=mavsdk formation_type:=triangle
-```
-
-如果使用 MAVSDK，需要系统 Python 能导入 `mavsdk`：
-
-```bash
-/usr/bin/python3 -m pip install --user mavsdk
-```
-
-长期真实 PX4 通信和 Offboard 控制优先走 C++ `px4_bridge_uxrce`。
 
 ## 核心话题
 
@@ -231,13 +213,29 @@ ros2 service call /uav_1/rtl std_srvs/srv/Trigger {}
 - PX4 本地位置使用 `local_ned`：`x=north`、`y=east`、`z=down`。
 - bridge 层负责转换：`ENU.x=NED.y`，`ENU.y=NED.x`，`ENU.z=-NED.z`。
 
+## 初始位置与队形 Offset
+
+PX4/Gazebo 的出生位置、`swarm.yaml` 的初始锚点、`formations.yaml` 的队形 offset 是三件不同的事：
+
+| 项目 | 配置位置 | 作用阶段 | 谁使用 | 坐标/含义 | 和编队的关系 |
+|---|---|---|---|---|---|
+| Gazebo 出生位置 | PX4 脚本 `sitl_multiple_run.sh` 内部生成，当前通过 `./scripts/start_px4_multi_sitl.sh 3 iris` 调用 | PX4 SITL 启动时 | Gazebo / PX4 SITL | 决定模型一开始在仿真世界哪里出现；常见三机类似 `(0,0)`、`(3,0)`、`(0,3)` | 只是出生摆放，不等于飞行队形 |
+| `initial_position` | `config/swarm.yaml` 的 `swarm.drones[*].initial_position` | ROS2 bridge 发布状态时 | `px4_bridge_uxrce` | 每架飞机的 ENU 初始锚点，用于把 PX4 local NED 状态对齐到项目 `local_enu` | 应尽量与 Gazebo 出生位置一致，否则 ROS 侧位置会带偏移 |
+| formation offset | `config/formations.yaml` 的 `formations.<type>.offsets` | 编队控制运行时 | `formation_controller` | 每架飞机相对 leader 的目标偏移，格式为 `[x_east, y_north, z_up]` | 真正决定飞行中保持的三角、一字或纵队形 |
+
+调试原则：
+
+- Gazebo 出生位置只影响起飞前飞机摆在哪里。
+- `initial_position` 影响 ROS2 看到的每架飞机局部 ENU 坐标。
+- formation offset 影响起飞后 follower 要追到 leader 的哪个相对位置。
+- 如果三者差异太大，飞机起飞后会先横移追队形，看起来像“绕一下”或“突然调整”。
+
 ## 配置文件
 
 `config/swarm.yaml`：
 
 - 无人机数量、namespace、role。
 - PX4 `system_id`。
-- MAVSDK UDP / server port。
 - uXRCE-DDS topic prefix。
 - 初始 ENU 锚点。
 
@@ -267,7 +265,7 @@ QGroundControl 运行在 Windows 主机，不在 WSL2 内部。PX4 SITL、ROS2 �
 ## 开发规则
 
 - `swarm_manager` 这类低频状态管理可用 Python。
-- mock、MAVSDK 快速验证可用 Python。
+- mock 快速验证可用 Python。
 - uXRCE-DDS、`px4_msgs`、Offboard setpoint、编队控制核心、安全监控优先 C++。
 - 当前 `formation_controller` 已迁移为 C++，不要再回退到 Python 编队核心。
 

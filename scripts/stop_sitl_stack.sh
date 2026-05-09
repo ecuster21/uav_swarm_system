@@ -47,7 +47,6 @@ wait_until_clean() {
     return 1
 }
 
-pkill -f "mavsdk_server.*1454[0-9]" 2>/dev/null || true
 pkill -f "px4-simulator_mavlink" 2>/dev/null || true
 pkill -x px4 2>/dev/null || true
 pkill -x gzclient 2>/dev/null || true
@@ -63,9 +62,9 @@ if ! wait_until_clean; then
     kill_gazebo_master_owner
 fi
 
-echo "Remaining PX4/Gazebo/MAVSDK processes:"
+echo "Remaining PX4/Gazebo processes:"
 ps -ef \
-    | grep -E "px4|gzserver|gzclient|mavsdk_server" \
+    | grep -E "px4|gzserver|gzclient" \
     | grep -v grep \
     | grep -v "<defunct>" \
     || true

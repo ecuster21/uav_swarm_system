@@ -46,8 +46,6 @@ def _launch_setup(context, *args, **kwargs):
                         "role": str(drone.get("role", "unknown")),
                         "backend_type": "mock",
                         "frame_id": str(swarm.get("frame_id", "local_enu")),
-                        "system_id": int(drone.get("system_id", 1)),
-                        "mavlink_udp_port": int(drone.get("mavlink_udp_port", 14540)),
                         "initial_position": drone.get("initial_position", [0.0, 0.0, 0.0]),
                         "state_rate_hz": float(mock_backend.get("state_rate_hz", 20.0)),
                         "max_speed_m_s": float(mock_backend.get("max_speed_m_s", 1.5)),

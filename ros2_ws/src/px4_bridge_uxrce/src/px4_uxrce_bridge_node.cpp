@@ -249,14 +249,50 @@ private:
     if (!msg->drone_id.empty() && msg->drone_id != drone_id_) {
       return;
     }
-    latest_target_ = msg;
     if (!msg->active) {
-      offboard_requested_ = false;
+      if (is_armed() && local_position_valid()) {
+        latest_target_ = make_current_position_hold_target(*msg);
+        offboard_requested_ = true;
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 5000,
+          "Received inactive target while armed; keeping offboard stream with current-position hold");
+      } else {
+        latest_target_ = msg;
+        offboard_requested_ = false;
+      }
       return;
     }
+
+    latest_target_ = msg;
     if (enable_offboard_from_target_ && is_armed() && local_position_valid()) {
       offboard_requested_ = true;
     }
+  }
+
+  swarm_msgs::msg::FormationTarget::SharedPtr make_current_position_hold_target(
+    const swarm_msgs::msg::FormationTarget & inactive_msg) const
+  {
+    auto hold = std::make_shared<swarm_msgs::msg::FormationTarget>(inactive_msg);
+    hold->header.stamp = now();
+    hold->header.frame_id = frame_id_;
+    hold->drone_id = drone_id_;
+    hold->source = inactive_msg.source + ".bridge_current_position_hold";
+    hold->position = current_enu_position();
+    hold->yaw = latest_local_position_ ? latest_local_position_->heading : inactive_msg.yaw;
+    hold->active = true;
+    return hold;
+  }
+
+  geometry_msgs::msg::Point current_enu_position() const
+  {
+    geometry_msgs::msg::Point point{};
+    if (!latest_local_position_) {
+      return point;
+    }
+    point.x = initial_position_[0] + latest_local_position_->y;
+    point.y = initial_position_[1] + latest_local_position_->x;
+    point.z = initial_position_[2] - latest_local_position_->z;
+    return point;
   }
 
   void publish_state()
@@ -274,9 +310,7 @@ private:
     msg.status_text = status_text();
 
     if (latest_local_position_) {
-      msg.position.x = initial_position_[0] + latest_local_position_->y;
-      msg.position.y = initial_position_[1] + latest_local_position_->x;
-      msg.position.z = initial_position_[2] - latest_local_position_->z;
+      msg.position = current_enu_position();
       msg.velocity.x = latest_local_position_->vy;
       msg.velocity.y = latest_local_position_->vx;
       msg.velocity.z = -latest_local_position_->vz;

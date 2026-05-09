@@ -1,38 +1,75 @@
+# 编队控制配置文件。
+# 作用：定义坐标系约定、编队控制周期、安全限制，以及每种队形下各无人机
+# 相对 leader 的位置偏移。
+
+# ROS2 编队逻辑和 PX4 bridge 之间的坐标系约定。
 frame:
+  # FormationTarget 和 DroneState 使用的项目内部坐标系。
   command_frame: local_enu
+  # PX4 本地位置和轨迹 setpoint 内部常用坐标系。
   px4_internal_frame: local_ned
+  # 坐标转换规则说明；真正的转换在 bridge 层实现。
   conversion: "ROS targets use ENU: x=east, y=north, z=up. PX4 local position uses NED: x=north, y=east, z=down. Bridge conversion: enu.x=ned.y, enu.y=ned.x, enu.z=-ned.z."
 
+# leader-follower 编队控制器主参数。
 controller:
+  # 未通过 launch 参数指定 formation_type 时使用的默认队形。
   default_formation_type: triangle
+  # formation_controller 发布 FormationTarget 的频率，单位 Hz。
   control_rate_hz: 2.0
+  # leader 距离当前航点小于该半径时，切换到下一个航点，单位 m。
   waypoint_acceptance_radius_m: 0.45
+  # leader 状态超过该时间未更新时，follower 进入 hold 逻辑，单位 s。
   leader_state_timeout_sec: 3.0
 
+# 发布 FormationTarget 前使用的安全限制。
 safety:
-  max_speed_m_s: 1.5
-  max_altitude_m: 5.0
+  # 目标点步进速度上限，单位 m/s；调大后编队移动会更快。
+  max_speed_m_s: 2.5
+  # 目标高度上限，local_enu 下 z 轴向上，单位 m。
+  max_altitude_m: 15.0
+  # 目标高度下限，local_enu 下 z 轴向上，单位 m。
   min_altitude_m: 0.5
+  # 任意两架无人机之间允许的最小距离，单位 m。
   min_inter_drone_distance_m: 1.2
 
+# 队形定义。offset 均为相对 leader 位置的 local_enu 偏移。
 formations:
+  # 三角/楔形队形：leader 在前，两架 follower 分别在后方左右两侧。
   triangle:
+    # 队形的人类可读描述，用于理解配置。
     description: "Leader in front, followers behind-left and behind-right."
+    # 偏移表：drone_id -> [x_east, y_north, z_up]，单位 m。
     offsets:
+      # leader 相对自身偏移为 0。
       uav_1: [0.0, 0.0, 0.0]
+      # uav_2 位于 leader 后方和一侧。
       uav_2: [-2.0, -1.5, 0.0]
+      # uav_3 位于 leader 后方和另一侧。
       uav_3: [-2.0, 1.5, 0.0]
 
+  # 一字横队：沿 ENU y 轴左右展开，leader 位于中间。
   line:
+    # 队形的人类可读描述，用于理解配置。
     description: "Line abreast in ENU y-axis, centered on the leader."
+    # 偏移表：drone_id -> [x_east, y_north, z_up]，单位 m。
     offsets:
+      # leader 位于横队中心。
       uav_1: [0.0, 0.0, 0.0]
+      # uav_2 位于 leader 一侧。
       uav_2: [0.0, -2.0, 0.0]
+      # uav_3 位于 leader 另一侧。
       uav_3: [0.0, 2.0, 0.0]
 
+  # 纵队：沿 ENU x 轴排在 leader 后方。
   column:
+    # 队形的人类可读描述，用于理解配置。
     description: "Single-file column behind the leader in ENU x-axis."
+    # 偏移表：drone_id -> [x_east, y_north, z_up]，单位 m。
     offsets:
+      # leader 位于纵队最前方。
       uav_1: [0.0, 0.0, 0.0]
+      # uav_2 位于 leader 后方。
       uav_2: [-2.0, 0.0, 0.0]
+      # uav_3 位于 uav_2 更后方。
       uav_3: [-4.0, 0.0, 0.0]

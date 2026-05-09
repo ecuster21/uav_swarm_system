@@ -62,7 +62,7 @@ WSL2 Ubuntu 22.04
 ├── MicroXRCEAgent 2.4.1
 └── ROS2 Humble
     ├── 单机接口层
-    │   └── px4_bridge (每机一个实例，独立 namespace)
+    │   └── px4_bridge_uxrce (每机一个实例，独立 namespace)
     ├── 集群状态层
     │   └── swarm_manager
     ├── 任务编排层
@@ -101,7 +101,7 @@ WSL2 Ubuntu 22.04
 
 机载域是未来部署到 `RK3588` 的运行域，包含：
 
-- 每架无人机本机的 `px4_bridge`
+- 每架无人机本机的 `px4_bridge_uxrce`
 - 本机状态发布
 - 本机任务执行器
 - 本机感知节点
@@ -148,7 +148,7 @@ WSL2 Ubuntu 22.04
 
 - 避免上层模块直接耦合 PX4 原始话题细节
 
-## 5.2 `px4_bridge`
+## 5.2 `px4_bridge_uxrce`
 
 职责：
 
@@ -286,7 +286,7 @@ WSL2 Ubuntu 22.04
 - `radar_perception`
 - `ground_station_bridge`
 
-这些模块都不应直接侵入 `px4_bridge`，而应通过统一消息接口与
+这些模块都不应直接侵入 `px4_bridge_uxrce`，而应通过统一消息接口与
 `mission_manager`、`swarm_manager` 交互。
 
 ## 6. namespace 与标识体系
@@ -301,7 +301,7 @@ WSL2 Ubuntu 22.04
 
 每个 namespace 内至少包含：
 
-- 本机 `px4_bridge`
+- 本机 `px4_bridge_uxrce`
 - 本机状态输出
 - 本机任务执行输入
 
@@ -335,7 +335,7 @@ WSL2 Ubuntu 22.04
 
 ## 7.1 单机状态层
 
-由每个 `px4_bridge` 发布本机归一化状态，至少包含：
+由每个 `px4_bridge_uxrce` 发布本机归一化状态，至少包含：
 
 - 位置
 - 速度
@@ -369,11 +369,11 @@ WSL2 Ubuntu 22.04
    - 航点任务
    - 手动指定目标
    - 后续搜索/巡逻任务
-3. leader 的 `px4_bridge` 将目标转为 PX4 可执行指令
+3. leader 的 `px4_bridge_uxrce` 将目标转为 PX4 可执行指令
 4. `formation_controller` 订阅 leader 与 follower 状态
 5. `formation_controller` 根据相对偏置和控制律生成 follower setpoint
 6. `collision_avoidance` 对输出做约束检查
-7. follower 的 `px4_bridge` 将 setpoint 发送给 PX4
+7. follower 的 `px4_bridge_uxrce` 将 setpoint 发送给 PX4
 
 关键要求：
 
@@ -389,7 +389,7 @@ WSL2 Ubuntu 22.04
 2. `coverage_planner` 生成区域覆盖路径
 3. `task_allocator` 将路径分块分配给多架无人机
 4. `mission_manager` 为每架无人机生成可执行任务
-5. 各机 `px4_bridge` 负责转换为航点或 offboard 指令
+5. 各机 `px4_bridge_uxrce` 负责转换为航点或 offboard 指令
 6. `swarm_manager` 统一收集执行进度
 
 这样可以保证：
@@ -404,7 +404,7 @@ WSL2 Ubuntu 22.04
 
 - 感知模块发布目标、障碍物、区域语义信息
 - `mission_manager` 或 `collision_avoidance` 决定是否调整任务
-- 必要时再由 `px4_bridge` 转为新的飞行目标
+- 必要时再由 `px4_bridge_uxrce` 转为新的飞行目标
 
 针对 `RK3588`，建议：
 
@@ -467,7 +467,7 @@ WSL2 Ubuntu 22.04
 说明：
 
 - `mission_manager` 负责高层状态切换
-- `px4_bridge` 负责将状态目标转化为 PX4 命令序列
+- `px4_bridge_uxrce` 负责将状态目标转化为 PX4 命令序列
 - `swarm_manager` 负责状态汇总与外部可视化
 
 ## 14. 参考项目吸收映射
@@ -488,17 +488,13 @@ WSL2 Ubuntu 22.04
   - simulation / aircraft / ground 分层
   - state sharing 与 mission 分层
 
-- `mavsdk_drone_show`
-  - 任务生命周期
-  - 搜索任务与地面站组织方式
-
 ## 15. 架构结论
 
 本项目推荐采用：
 
 - `PX4` 负责飞行安全和底层控制
 - `ROS2` 负责群体智能和任务系统
-- `px4_bridge` 负责单机接口标准化
+- `px4_bridge_uxrce` 负责真实 PX4 单机接口标准化
 - `swarm_manager + mission_manager` 负责系统主控
 - `formation_controller + task_allocator + coverage_planner` 负责群体智能能力
 - `QGC` 作为标准飞控地面站保留

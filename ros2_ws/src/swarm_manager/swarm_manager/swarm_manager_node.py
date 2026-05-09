@@ -1,3 +1,4 @@
+from contextlib import suppress
 from dataclasses import dataclass
 
 import rclpy
@@ -147,9 +148,11 @@ def main(args: list[str] | None = None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+        with suppress(Exception, KeyboardInterrupt):
+            node.destroy_node()
+        with suppress(Exception, KeyboardInterrupt):
+            if rclpy.ok():
+                rclpy.shutdown()
 
 
 if __name__ == "__main__":

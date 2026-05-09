@@ -100,23 +100,19 @@
    - 学习 ROS2 工程架构、行为树、插件化、生命周期管理。
    - 不作为无人机主导航系统。
 
-2. `mavsdk_drone_show`
-   - 学习 MAVSDK 多无人机控制、任务下发、地面站设计、多机任务组织。
-   - 可作为 MAVSDK 后端参考。
-
-3. `PythonRobotics`
+2. `PythonRobotics`
    - 学习路径规划、覆盖搜索、控制算法、算法原型。
    - 可参考算法思想，不要直接大段复制。
 
-4. `swarmSim`
+3. `swarmSim`
    - 学习多机器人/多无人机接口设计。
    - 它是 ROS1 项目，不作为主线。
 
-5. `PX4_Swarm_Controller`
+4. `PX4_Swarm_Controller`
    - 重点学习 ROS2 + PX4 多机仿真、Offboard、leader-follower、邻居拓扑、编队控制。
    - 可作为第一阶段仿真架构的重要参考。
 
-6. `aerial-autonomy-stack`
+5. `aerial-autonomy-stack`
    - 重点学习 ROS2 + PX4/ArduPilot + Gazebo + 感知 + 多机通信 + 部署的全栈架构。
    - 注意它偏 Jetson/Orin，不要直接照搬 NVIDIA/TensorRT/DeepStream 依赖到 RK3588。
 
@@ -150,8 +146,7 @@
 4. 地面站后端：`ground_station/backend`
 5. 启动脚本、测试脚本、日志分析脚本
 6. 算法原型验证
-7. MAVSDK 快速验证脚本
-8. 低频状态管理节点，例如 1Hz 到 10Hz 的管理逻辑
+7. 低频状态管理节点，例如 1Hz 到 10Hz 的管理逻辑
 
 原因：
 - 开发快
@@ -163,7 +158,7 @@
 
 以下模块优先使用 C++：
 
-1. `px4_bridge` 的核心通信后端
+1. `px4_bridge_uxrce` 的核心通信后端
 2. uXRCE-DDS / `px4_msgs` 通信节点
 3. 高频 Offboard setpoint 发布节点
 4. `formation_controller` 编队控制核心
@@ -205,7 +200,6 @@ uav_swarm_system/
 │   └── wsl2_network.md
 ├── references/
 │   ├── navigation2/
-│   ├── mavsdk_drone_show/
 │   ├── PythonRobotics/
 │   ├── swarmSim/
 │   ├── PX4_Swarm_Controller/
@@ -213,7 +207,8 @@ uav_swarm_system/
 ├── ros2_ws/
 │   └── src/
 │       ├── swarm_msgs/
-│       ├── px4_bridge/
+│       ├── px4_bridge/          # mock only
+│       ├── px4_bridge_uxrce/    # real PX4 uXRCE-DDS path
 │       ├── swarm_manager/
 │       ├── formation_controller/
 │       ├── task_allocator/

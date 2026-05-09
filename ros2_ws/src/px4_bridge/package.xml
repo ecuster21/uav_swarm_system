@@ -3,7 +3,7 @@
 <package format="3">
   <name>px4_bridge</name>
   <version>0.1.0</version>
-  <description>PX4 bridge abstraction with mock and MAVSDK SITL backends.</description>
+  <description>Mock bridge for fast ROS2 swarm tests without PX4 runtime dependencies.</description>
   <maintainer email="jie@example.com">jie</maintainer>
   <license>Apache-2.0</license>
 
