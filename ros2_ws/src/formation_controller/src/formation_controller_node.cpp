@@ -31,6 +31,14 @@ struct DroneConfig
   std::string role;
 };
 
+struct FormationSpacing
+{
+  double longitudinal_spacing_m{2.0};
+  double lateral_spacing_m{1.5};
+  double spacing_m{2.0};
+  double z_offset_m{0.0};
+};
+
 struct SafetyConfig
 {
   double max_speed_m_s{1.5};
@@ -99,6 +107,14 @@ std::string yaml_string(
   return node && node[key] ? node[key].as<std::string>() : default_value;
 }
 
+std::array<double, 3> offset_from_yaml(const YAML::Node & values, const std::string & drone_id)
+{
+  if (!values.IsSequence() || values.size() != 3) {
+    throw std::runtime_error("Offset for " + drone_id + " must have exactly 3 values");
+  }
+  return {values[0].as<double>(), values[1].as<double>(), values[2].as<double>()};
+}
+
 }  // namespace
 
 class FormationController : public rclcpp::Node
@@ -155,7 +171,7 @@ public:
       throw std::runtime_error("Unknown formation_type: " + formation_type_);
     }
 
-    offsets_ = load_offsets(formation_section);
+    offsets_ = load_or_generate_offsets(formation_section);
     load_waypoints();
     frame_id_ = "local_enu";
 
@@ -264,24 +280,136 @@ private:
     return drones;
   }
 
-  std::map<std::string, std::array<double, 3>> load_offsets(
+  std::map<std::string, std::array<double, 3>> load_or_generate_offsets(
+    const YAML::Node & formation_section) const
+  {
+    std::map<std::string, std::array<double, 3>> offsets;
+
+    const auto generator_section = formation_section["generator"];
+    if (generator_section) {
+      offsets = generate_offsets(generator_section);
+    }
+
+    const auto explicit_offsets = load_explicit_offsets(formation_section);
+    offsets.insert_or_assign(leader_id_, std::array<double, 3>{0.0, 0.0, 0.0});
+    for (const auto & [drone_id, offset] : explicit_offsets) {
+      offsets[drone_id] = offset;
+    }
+
+    if (!generator_section && explicit_offsets.empty()) {
+      throw std::runtime_error("formation must define generator or offsets");
+    }
+
+    validate_offsets(offsets);
+    return offsets;
+  }
+
+  std::map<std::string, std::array<double, 3>> load_explicit_offsets(
     const YAML::Node & formation_section) const
   {
     std::map<std::string, std::array<double, 3>> offsets;
     const auto offsets_section = formation_section["offsets"];
-    if (!offsets_section || !offsets_section.IsMap()) {
+    if (!offsets_section) {
+      return offsets;
+    }
+    if (!offsets_section.IsMap()) {
       throw std::runtime_error("formation offsets must be a mapping");
     }
 
     for (const auto & item : offsets_section) {
-      const auto drone_id = item.first.as<std::string>();
-      const auto values = item.second;
-      if (!values.IsSequence() || values.size() != 3) {
-        throw std::runtime_error("Offset for " + drone_id + " must have exactly 3 values");
-      }
-      offsets[drone_id] = {values[0].as<double>(), values[1].as<double>(), values[2].as<double>()};
+      offsets[item.first.as<std::string>()] =
+        offset_from_yaml(item.second, item.first.as<std::string>());
+    }
+    return offsets;
+  }
+
+  std::map<std::string, std::array<double, 3>> generate_offsets(
+    const YAML::Node & generator_section) const
+  {
+    if (!generator_section.IsMap()) {
+      throw std::runtime_error("formation generator must be a mapping");
     }
 
+    const auto generator_type = yaml_string(generator_section, "type", formation_type_);
+    const auto spacing = load_formation_spacing(generator_section);
+
+    std::map<std::string, std::array<double, 3>> offsets;
+    offsets[leader_id_] = {0.0, 0.0, 0.0};
+
+    std::size_t follower_index = 0;
+    for (const auto & drone : drone_configs_) {
+      if (drone.drone_id == leader_id_) {
+        continue;
+      }
+
+      if (generator_type == "triangle" || generator_type == "wedge") {
+        offsets[drone.drone_id] = generate_wedge_offset(follower_index, spacing);
+      } else if (generator_type == "line") {
+        offsets[drone.drone_id] = generate_line_offset(follower_index, spacing);
+      } else if (generator_type == "column") {
+        offsets[drone.drone_id] = generate_column_offset(follower_index, spacing);
+      } else {
+        throw std::runtime_error(
+          "formation generator type must be one of: triangle, wedge, line, column; got " +
+          generator_type);
+      }
+      ++follower_index;
+    }
+
+    return offsets;
+  }
+
+  FormationSpacing load_formation_spacing(const YAML::Node & generator_section) const
+  {
+    FormationSpacing spacing{};
+    spacing.spacing_m = yaml_double(generator_section, "spacing_m", spacing.spacing_m);
+    spacing.longitudinal_spacing_m = yaml_double(
+      generator_section, "longitudinal_spacing_m", spacing.spacing_m);
+    spacing.lateral_spacing_m = yaml_double(
+      generator_section, "lateral_spacing_m", spacing.spacing_m);
+    spacing.z_offset_m = yaml_double(generator_section, "z_offset_m", 0.0);
+
+    if (spacing.spacing_m <= 0.0 || spacing.longitudinal_spacing_m <= 0.0 ||
+      spacing.lateral_spacing_m <= 0.0)
+    {
+      throw std::runtime_error("formation generator spacing values must be positive");
+    }
+    return spacing;
+  }
+
+  std::array<double, 3> generate_wedge_offset(
+    std::size_t follower_index, const FormationSpacing & spacing) const
+  {
+    const auto pair_index = follower_index / 2 + 1;
+    const auto side = follower_index % 2 == 0 ? -1.0 : 1.0;
+    return {
+      -spacing.longitudinal_spacing_m * static_cast<double>(pair_index),
+      side * spacing.lateral_spacing_m * static_cast<double>(pair_index),
+      spacing.z_offset_m};
+  }
+
+  std::array<double, 3> generate_line_offset(
+    std::size_t follower_index, const FormationSpacing & spacing) const
+  {
+    const auto pair_index = follower_index / 2 + 1;
+    const auto side = follower_index % 2 == 0 ? -1.0 : 1.0;
+    return {
+      0.0,
+      side * spacing.spacing_m * static_cast<double>(pair_index),
+      spacing.z_offset_m};
+  }
+
+  std::array<double, 3> generate_column_offset(
+    std::size_t follower_index, const FormationSpacing & spacing) const
+  {
+    return {
+      -spacing.spacing_m * static_cast<double>(follower_index + 1),
+      0.0,
+      spacing.z_offset_m};
+  }
+
+  void validate_offsets(const std::map<std::string, std::array<double, 3>> & offsets) const
+  {
     std::vector<std::string> missing_followers;
     for (const auto & follower_id : follower_ids_) {
       if (offsets.count(follower_id) == 0) {
@@ -291,7 +419,6 @@ private:
     if (!missing_followers.empty()) {
       throw std::runtime_error("Formation " + formation_type_ + " is missing follower offsets");
     }
-    return offsets;
   }
 
   void load_waypoints()

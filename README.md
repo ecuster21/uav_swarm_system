@@ -138,8 +138,16 @@ cd /home/jie/uav_swarm_system
 ```bash
 cd /home/jie/uav_swarm_system
 source scripts/setup_env.sh
-ros2 launch formation_controller swarm_px4_uxrce.launch.py formation_type:=triangle
+ros2 launch formation_controller swarm_px4_uxrce.launch.py formation_type:=triangle vehicle_count:=3
 ```
+
+如果 PX4 SITL 不是默认三机，例如已经运行 `./scripts/start_px4_multi_sitl.sh 5 iris`，ROS 控制 launch 也要指定同样数量：
+
+```bash
+ros2 launch formation_controller swarm_px4_uxrce.launch.py formation_type:=triangle vehicle_count:=5
+```
+
+`vehicle_count` 会按 PX4 `sitl_multiple_run.sh` 的默认网格规则自动生成 `uav_1..uav_N`、`system_id`、`px4_topic_prefix` 和初始 ENU 锚点；队形 offset 再由 `config/formations.yaml` 的 generator 自动生成。
 
 起飞：
 
@@ -148,6 +156,8 @@ cd /home/jie/uav_swarm_system
 source scripts/setup_env.sh
 ./scripts/swarm_arm_takeoff.sh
 ```
+
+不传参数时，`swarm_arm_takeoff.sh` 和 `swarm_land_all.sh` 会优先从当前 ROS graph 的 `/uav_N/px4_bridge` 自动发现无人机；如果 ROS graph 里还没有 bridge，再从 `config/swarm.yaml` 的 `swarm.drones` 读取。也可以显式传入 `uav_1 uav_2 ...` 只操作指定飞机。
 
 查看状态：
 
@@ -171,7 +181,7 @@ source scripts/setup_env.sh
 
 | Topic | Type | 说明 |
 |---|---|---|
-| `/uav_N/state` | `swarm_msgs/msg/DroneState` | 单机状态，N 为 1/2/3 |
+| `/uav_N/state` | `swarm_msgs/msg/DroneState` | 单机状态，N 对应 `swarm.drones` 中的编号 |
 | `/swarm/state` | `swarm_msgs/msg/SwarmState` | 集群状态汇总 |
 | `/uav_N/formation_target` | `swarm_msgs/msg/FormationTarget` | 编队控制目标 |
 | `/px4_N/fmu/out/*` | `px4_msgs/msg/*` | PX4 uXRCE-DDS 输出 |
@@ -194,9 +204,9 @@ ros2 service call /uav_1/rtl std_srvs/srv/Trigger {}
 行为：
 
 - `uav_1` 是 leader。
-- `uav_2`、`uav_3` 是 follower。
+- `swarm.drones` 中除 leader 外的无人机都是 follower。
 - leader 按 `config/waypoints.yaml` 中的航点循环飞行。
-- follower 根据 leader 位置和 `config/formations.yaml` 中的 offset 生成目标点。
+- follower 根据 leader 位置和 `config/formations.yaml` 中的队形生成器自动生成目标点。
 - 当前 offset 是固定 `local_enu` 世界坐标偏移，暂不随 leader yaw 旋转。
 
 安全限制：
@@ -221,7 +231,7 @@ PX4/Gazebo 的出生位置、`swarm.yaml` 的初始锚点、`formations.yaml` �
 |---|---|---|---|---|---|
 | Gazebo 出生位置 | PX4 脚本 `sitl_multiple_run.sh` 内部生成，当前通过 `./scripts/start_px4_multi_sitl.sh 3 iris` 调用 | PX4 SITL 启动时 | Gazebo / PX4 SITL | 决定模型一开始在仿真世界哪里出现；常见三机类似 `(0,0)`、`(3,0)`、`(0,3)` | 只是出生摆放，不等于飞行队形 |
 | `initial_position` | `config/swarm.yaml` 的 `swarm.drones[*].initial_position` | ROS2 bridge 发布状态时 | `px4_bridge_uxrce` | 每架飞机的 ENU 初始锚点，用于把 PX4 local NED 状态对齐到项目 `local_enu` | 应尽量与 Gazebo 出生位置一致，否则 ROS 侧位置会带偏移 |
-| formation offset | `config/formations.yaml` 的 `formations.<type>.offsets` | 编队控制运行时 | `formation_controller` | 每架飞机相对 leader 的目标偏移，格式为 `[x_east, y_north, z_up]` | 真正决定飞行中保持的三角、一字或纵队形 |
+| formation offset | `config/formations.yaml` 的 `formations.<type>.generator`，也可用 `offsets` 局部覆盖 | 编队控制运行时 | `formation_controller` | 每架飞机相对 leader 的目标偏移，格式为 `[x_east, y_north, z_up]` | 真正决定飞行中保持的三角、一字或纵队形 |
 
 调试原则：
 
@@ -241,7 +251,8 @@ PX4/Gazebo 的出生位置、`swarm.yaml` 的初始锚点、`formations.yaml` �
 
 `config/formations.yaml`：
 
-- `triangle`、`line`、`column` offset。
+- `triangle`、`line`、`column` 的 N 机 offset 自动生成参数。
+- 可选 `offsets` 覆盖某些无人机的特殊偏移。
 - `control_rate_hz`，当前默认 `2.0`。
 - 高度、速度、最小间距安全限制。
 

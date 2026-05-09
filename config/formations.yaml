@@ -34,42 +34,40 @@ safety:
   min_inter_drone_distance_m: 1.2
 
 # 队形定义。offset 均为相对 leader 位置的 local_enu 偏移。
+# 默认使用 generator 按 swarm.drones 顺序为 N 架无人机自动生成 offset：
+# leader 固定为 [0, 0, 0]，其余无人机按配置中的顺序依次排布。
+# 如需对某一架飞机做特殊调整，可在对应队形下增加 offsets 覆盖：
+# offsets:
+#   uav_4: [-4.0, 3.5, 0.0]
 formations:
-  # 三角/楔形队形：leader 在前，两架 follower 分别在后方左右两侧。
+  # 三角/楔形队形：leader 在前，follower 沿后方左右两臂自动展开。
   triangle:
     # 队形的人类可读描述，用于理解配置。
-    description: "Leader in front, followers behind-left and behind-right."
-    # 偏移表：drone_id -> [x_east, y_north, z_up]，单位 m。
-    offsets:
-      # leader 相对自身偏移为 0。
-      uav_1: [0.0, 0.0, 0.0]
-      # uav_2 位于 leader 后方和一侧。
-      uav_2: [-2.0, -1.5, 0.0]
-      # uav_3 位于 leader 后方和另一侧。
-      uav_3: [-2.0, 1.5, 0.0]
+    description: "Leader in front, followers automatically expand as a wedge."
+    # 自动生成器：第 1 对 follower 位于 [-2.0, +/-1.5, 0.0]，
+    # 第 2 对位于 [-4.0, +/-3.0, 0.0]，以此类推。
+    generator:
+      type: wedge
+      longitudinal_spacing_m: 2.0
+      lateral_spacing_m: 1.5
+      z_offset_m: 0.0
 
   # 一字横队：沿 ENU y 轴左右展开，leader 位于中间。
   line:
     # 队形的人类可读描述，用于理解配置。
     description: "Line abreast in ENU y-axis, centered on the leader."
-    # 偏移表：drone_id -> [x_east, y_north, z_up]，单位 m。
-    offsets:
-      # leader 位于横队中心。
-      uav_1: [0.0, 0.0, 0.0]
-      # uav_2 位于 leader 一侧。
-      uav_2: [0.0, -2.0, 0.0]
-      # uav_3 位于 leader 另一侧。
-      uav_3: [0.0, 2.0, 0.0]
+    # 自动生成器：follower 依次位于 y=-2、+2、-4、+4...。
+    generator:
+      type: line
+      spacing_m: 2.0
+      z_offset_m: 0.0
 
   # 纵队：沿 ENU x 轴排在 leader 后方。
   column:
     # 队形的人类可读描述，用于理解配置。
     description: "Single-file column behind the leader in ENU x-axis."
-    # 偏移表：drone_id -> [x_east, y_north, z_up]，单位 m。
-    offsets:
-      # leader 位于纵队最前方。
-      uav_1: [0.0, 0.0, 0.0]
-      # uav_2 位于 leader 后方。
-      uav_2: [-2.0, 0.0, 0.0]
-      # uav_3 位于 uav_2 更后方。
-      uav_3: [-4.0, 0.0, 0.0]
+    # 自动生成器：follower 依次位于 x=-2、-4、-6...。
+    generator:
+      type: column
+      spacing_m: 2.0
+      z_offset_m: 0.0

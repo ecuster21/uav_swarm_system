@@ -16,11 +16,6 @@ swarm:
   # leader 无人机 ID，formation_controller 会让该飞机按航点飞行。
   leader_id: uav_1
 
-  # follower 无人机 ID 列表，应与 swarm.drones 中的 follower 条目保持一致。
-  follower_ids:
-    - uav_2
-    - uav_3
-
   # 无人机列表。launch 文件会为这里的每架无人机启动一个 bridge 节点。
   drones:
     # 项目内部无人机 ID，也用于队形 offset、状态表和日志。
