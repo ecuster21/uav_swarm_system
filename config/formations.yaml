@@ -15,12 +15,35 @@ frame:
 controller:
   # 未通过 launch 参数指定 formation_type 时使用的默认队形。
   default_formation_type: triangle
+  # 编队控制输出模式：
+  # - position_velocity：发布位置目标 + 速度前馈，推荐用于 PX4 SITL 和后续真机调参。
+  # - position_only：退回旧版位置目标模式，主要用于对比和问题定位。
+  control_mode: position_velocity
+  # offset 坐标系：
+  # - body_forward_right_up：offset 表示 leader 机体系 forward/right/up，并随 leader yaw 旋转。
+  # - local_enu：offset 固定在项目 ENU 世界坐标中，仅用于复现旧行为或调试坐标问题。
+  offset_frame: body_forward_right_up
+  # yaw 控制模式：
+  # - fixed：使用 waypoints.yaml 中的固定 yaw，兼容旧行为。
+  # - face_velocity：机头朝向 ENU 速度方向，QGC 图标会随航迹转向。
+  yaw_mode: face_velocity
   # formation_controller 发布 FormationTarget 的频率，单位 Hz。
-  control_rate_hz: 2.0
+  control_rate_hz: 10.0
   # leader 距离当前航点小于该半径时，切换到下一个航点，单位 m。
   waypoint_acceptance_radius_m: 0.45
   # leader 状态超过该时间未更新时，follower 进入 hold 逻辑，单位 s。
   leader_state_timeout_sec: 3.0
+  # leader 状态轻微延迟时使用常速度预测的最大时间窗，单位 s。
+  leader_prediction_horizon_sec: 1.0
+  # follower 速度命令中的 PD 增益。
+  gains:
+    kp_position: 0.8
+    kd_velocity: 0.35
+  # 速度命令平滑，避免 setpoint 跳变过猛。
+  smoothing:
+    max_acceleration_m_s2: 1.5
+    max_jerk_m_s3: 3.0
+    low_pass_alpha: 0.35
 
 # 发布 FormationTarget 前使用的安全限制。
 safety:
@@ -33,7 +56,8 @@ safety:
   # 任意两架无人机之间允许的最小距离，单位 m。
   min_inter_drone_distance_m: 1.2
 
-# 队形定义。offset 均为相对 leader 位置的 local_enu 偏移。
+# 队形定义。默认 offset 均为相对 leader 的机体系偏移：
+# forward 为 leader 航向前方，right 为 leader 右侧，up 为高度向上。
 # 默认使用 generator 按 swarm.drones 顺序为 N 架无人机自动生成 offset：
 # leader 固定为 [0, 0, 0]，其余无人机按配置中的顺序依次排布。
 # 如需对某一架飞机做特殊调整，可在对应队形下增加 offsets 覆盖：

@@ -35,6 +35,7 @@ constexpr float kPx4CustomMainModeOffboard = 6.0F;
 constexpr uint8_t kTargetComponentAutopilot = 1;
 constexpr uint8_t kSourceSystemCompanion = 1;
 constexpr uint8_t kSourceComponentCompanion = 191;
+constexpr double kPi = 3.14159265358979323846;
 
 std::string normalize_prefix(std::string prefix)
 {
@@ -86,6 +87,27 @@ std::string nav_state_to_string(uint8_t nav_state)
     default:
       return "NAV_STATE_" + std::to_string(nav_state);
   }
+}
+
+double normalize_angle(double angle)
+{
+  while (angle > kPi) {
+    angle -= 2.0 * kPi;
+  }
+  while (angle < -kPi) {
+    angle += 2.0 * kPi;
+  }
+  return angle;
+}
+
+double ned_yaw_to_enu(double yaw_ned)
+{
+  return normalize_angle(kPi / 2.0 - yaw_ned);
+}
+
+double enu_yaw_to_ned(double yaw_enu)
+{
+  return normalize_angle(kPi / 2.0 - yaw_enu);
 }
 }  // namespace
 
@@ -278,7 +300,9 @@ private:
     hold->drone_id = drone_id_;
     hold->source = inactive_msg.source + ".bridge_current_position_hold";
     hold->position = current_enu_position();
-    hold->yaw = latest_local_position_ ? latest_local_position_->heading : inactive_msg.yaw;
+    hold->yaw = latest_local_position_ ? ned_yaw_to_enu(latest_local_position_->heading) :
+      inactive_msg.yaw;
+    hold->use_velocity = false;
     hold->active = true;
     return hold;
   }
@@ -314,7 +338,7 @@ private:
       msg.velocity.x = latest_local_position_->vy;
       msg.velocity.y = latest_local_position_->vx;
       msg.velocity.z = -latest_local_position_->vz;
-      msg.yaw = latest_local_position_->heading;
+      msg.yaw = ned_yaw_to_enu(latest_local_position_->heading);
     }
     state_pub_->publish(msg);
   }
@@ -369,6 +393,7 @@ private:
     px4_msgs::msg::OffboardControlMode control_mode{};
     control_mode.timestamp = px4_timestamp_us();
     control_mode.position = true;
+    control_mode.velocity = latest_target_->use_velocity;
     offboard_control_mode_pub_->publish(control_mode);
 
     px4_msgs::msg::TrajectorySetpoint setpoint{};
@@ -377,10 +402,16 @@ private:
     setpoint.position[1] = static_cast<float>(latest_target_->position.x - initial_position_[0]);
     setpoint.position[2] = static_cast<float>(-(latest_target_->position.z - initial_position_[2]));
     const float nan = std::numeric_limits<float>::quiet_NaN();
-    setpoint.velocity = {nan, nan, nan};
+    if (latest_target_->use_velocity) {
+      setpoint.velocity[0] = static_cast<float>(latest_target_->velocity.y);
+      setpoint.velocity[1] = static_cast<float>(latest_target_->velocity.x);
+      setpoint.velocity[2] = static_cast<float>(-latest_target_->velocity.z);
+    } else {
+      setpoint.velocity = {nan, nan, nan};
+    }
     setpoint.acceleration = {nan, nan, nan};
     setpoint.jerk = {nan, nan, nan};
-    setpoint.yaw = static_cast<float>(latest_target_->yaw);
+    setpoint.yaw = static_cast<float>(enu_yaw_to_ned(latest_target_->yaw));
     setpoint.yawspeed = nan;
     trajectory_setpoint_pub_->publish(setpoint);
 

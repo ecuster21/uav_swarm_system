@@ -130,7 +130,7 @@ source scripts/setup_env.sh
 
 ```bash
 cd /home/jie/uav_swarm_system
-./scripts/start_px4_multi_sitl.sh 3 iris
+./scripts/start_px4_multi_sitl.sh 5 iris
 ```
 
 终端 3：ROS2 控制节点
@@ -138,7 +138,7 @@ cd /home/jie/uav_swarm_system
 ```bash
 cd /home/jie/uav_swarm_system
 source scripts/setup_env.sh
-ros2 launch formation_controller swarm_px4_uxrce.launch.py formation_type:=triangle vehicle_count:=3
+ros2 launch formation_controller swarm_px4_uxrce.launch.py formation_type:=triangle vehicle_count:=5
 ```
 
 如果 PX4 SITL 不是默认三机，例如已经运行 `./scripts/start_px4_multi_sitl.sh 5 iris`，ROS 控制 launch 也要指定同样数量：

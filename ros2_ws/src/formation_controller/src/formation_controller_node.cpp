@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <geometry_msgs/msg/point.hpp>
+#include <geometry_msgs/msg/vector3.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <swarm_msgs/msg/drone_state.hpp>
 #include <swarm_msgs/msg/formation_target.hpp>
@@ -23,6 +24,7 @@ using DroneState = swarm_msgs::msg::DroneState;
 using FormationTarget = swarm_msgs::msg::FormationTarget;
 using Point = geometry_msgs::msg::Point;
 using SwarmState = swarm_msgs::msg::SwarmState;
+using Vector3 = geometry_msgs::msg::Vector3;
 
 struct DroneConfig
 {
@@ -45,6 +47,27 @@ struct SafetyConfig
   double max_altitude_m{5.0};
   double min_altitude_m{0.5};
   double min_inter_drone_distance_m{1.2};
+};
+
+struct ControlGains
+{
+  double kp_position{0.8};
+  double kd_velocity{0.35};
+};
+
+struct SmoothingConfig
+{
+  double max_acceleration_m_s2{1.5};
+  double max_jerk_m_s3{3.0};
+  double low_pass_alpha{0.35};
+};
+
+struct ControlHistory
+{
+  Vector3 filtered_velocity{};
+  Vector3 acceleration{};
+  bool has_velocity{false};
+  bool has_acceleration{false};
 };
 
 std::string trim_slashes(const std::string & value)
@@ -86,9 +109,67 @@ double distance(const Point & a, const Point & b)
   return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+double norm(const Vector3 & vector)
+{
+  return std::sqrt(
+    vector.x * vector.x + vector.y * vector.y + vector.z * vector.z);
+}
+
 double clamp(double value, double low, double high)
 {
   return std::max(low, std::min(high, value));
+}
+
+double clamp01(double value)
+{
+  return clamp(value, 0.0, 1.0);
+}
+
+Vector3 make_vector(double x, double y, double z)
+{
+  Vector3 vector{};
+  vector.x = x;
+  vector.y = y;
+  vector.z = z;
+  return vector;
+}
+
+Vector3 vector_between(const Point & from, const Point & to)
+{
+  return make_vector(to.x - from.x, to.y - from.y, to.z - from.z);
+}
+
+Vector3 add_vectors(const Vector3 & a, const Vector3 & b)
+{
+  return make_vector(a.x + b.x, a.y + b.y, a.z + b.z);
+}
+
+Vector3 subtract_vectors(const Vector3 & a, const Vector3 & b)
+{
+  return make_vector(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+Vector3 scale_vector(const Vector3 & vector, double scale)
+{
+  return make_vector(vector.x * scale, vector.y * scale, vector.z * scale);
+}
+
+Vector3 limit_vector(const Vector3 & vector, double max_norm)
+{
+  const auto vector_norm = norm(vector);
+  if (vector_norm <= max_norm || vector_norm <= 1e-9 || max_norm <= 0.0) {
+    return vector;
+  }
+  return scale_vector(vector, max_norm / vector_norm);
+}
+
+Point translate_point(const Point & point, const Vector3 & vector)
+{
+  Point translated{};
+  translated.x = point.x + vector.x;
+  translated.y = point.y + vector.y;
+  translated.z = point.z + vector.z;
+  return translated;
 }
 
 double yaml_double(const YAML::Node & node, const std::string & key, double default_value)
@@ -135,6 +216,15 @@ public:
     declare_parameter<double>("max_altitude_m", 0.0);
     declare_parameter<double>("min_altitude_m", 0.0);
     declare_parameter<double>("min_inter_drone_distance_m", 0.0);
+    declare_parameter<std::string>("control_mode", "");
+    declare_parameter<std::string>("offset_frame", "");
+    declare_parameter<std::string>("yaw_mode", "");
+    declare_parameter<double>("kp_position", 0.0);
+    declare_parameter<double>("kd_velocity", 0.0);
+    declare_parameter<double>("max_acceleration_m_s2", 0.0);
+    declare_parameter<double>("max_jerk_m_s3", 0.0);
+    declare_parameter<double>("low_pass_alpha", -1.0);
+    declare_parameter<double>("leader_prediction_horizon_sec", 0.0);
 
     const auto swarm_config_file = get_parameter("swarm_config_file").as_string();
     const auto formations_config_file = get_parameter("formations_config_file").as_string();
@@ -184,6 +274,7 @@ public:
       "leader_state_timeout_sec",
       yaml_double(controller_section, "leader_state_timeout_sec", 2.0), 0.1);
     safety_ = load_safety_config();
+    load_control_config(controller_section);
 
     for (const auto & drone : drone_configs_) {
       target_publishers_[drone.drone_id] = create_publisher<FormationTarget>(
@@ -205,8 +296,9 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "Formation controller ready: formation_type=%s, leader=%s, frame=%s, rate=%.1f Hz",
-      formation_type_.c_str(), leader_id_.c_str(), frame_id_.c_str(), control_rate_hz_);
+      "Formation controller ready: formation_type=%s, leader=%s, frame=%s, mode=%s, offset_frame=%s, yaw_mode=%s, rate=%.1f Hz",
+      formation_type_.c_str(), leader_id_.c_str(), frame_id_.c_str(), control_mode_.c_str(),
+      offset_frame_.c_str(), yaw_mode_.c_str(), control_rate_hz_);
   }
 
 private:
@@ -464,6 +556,75 @@ private:
     return safety;
   }
 
+  void load_control_config(const YAML::Node & controller_section)
+  {
+    control_mode_ = get_parameter("control_mode").as_string();
+    if (control_mode_.empty()) {
+      control_mode_ = yaml_string(controller_section, "control_mode", "position_velocity");
+    }
+    if (control_mode_ != "position_only" && control_mode_ != "position_velocity") {
+      throw std::runtime_error(
+        "control_mode must be position_only or position_velocity; got " + control_mode_);
+    }
+    use_velocity_targets_ = control_mode_ == "position_velocity";
+
+    offset_frame_ = get_parameter("offset_frame").as_string();
+    if (offset_frame_.empty()) {
+      offset_frame_ = yaml_string(controller_section, "offset_frame", "body_forward_right_up");
+    }
+    if (offset_frame_ != "local_enu" && offset_frame_ != "body_forward_right_up") {
+      throw std::runtime_error(
+        "offset_frame must be local_enu or body_forward_right_up; got " + offset_frame_);
+    }
+
+    yaw_mode_ = get_parameter("yaw_mode").as_string();
+    if (yaw_mode_.empty()) {
+      yaw_mode_ = yaml_string(controller_section, "yaw_mode", "fixed");
+    }
+    if (yaw_mode_ != "fixed" && yaw_mode_ != "face_velocity") {
+      throw std::runtime_error(
+        "yaw_mode must be fixed or face_velocity; got " + yaw_mode_);
+    }
+
+    const auto gains_section = controller_section["gains"];
+    gains_.kp_position = resolve_configurable_double(
+      "kp_position", yaml_double(gains_section, "kp_position", gains_.kp_position), 0.0);
+    gains_.kd_velocity = resolve_configurable_double(
+      "kd_velocity", yaml_double(gains_section, "kd_velocity", gains_.kd_velocity), 0.0);
+
+    const auto smoothing_section = controller_section["smoothing"];
+    smoothing_.max_acceleration_m_s2 = resolve_configurable_double(
+      "max_acceleration_m_s2",
+      yaml_double(
+        smoothing_section, "max_acceleration_m_s2", smoothing_.max_acceleration_m_s2),
+      0.1);
+    smoothing_.max_jerk_m_s3 = resolve_configurable_double(
+      "max_jerk_m_s3",
+      yaml_double(smoothing_section, "max_jerk_m_s3", smoothing_.max_jerk_m_s3), 0.1);
+
+    const auto parameter_alpha = get_parameter("low_pass_alpha").as_double();
+    smoothing_.low_pass_alpha = parameter_alpha >= 0.0 ? parameter_alpha :
+      yaml_double(smoothing_section, "low_pass_alpha", smoothing_.low_pass_alpha);
+    smoothing_.low_pass_alpha = clamp01(smoothing_.low_pass_alpha);
+
+    leader_prediction_horizon_sec_ = resolve_configurable_double(
+      "leader_prediction_horizon_sec",
+      yaml_double(controller_section, "leader_prediction_horizon_sec", 1.0), 0.0);
+  }
+
+  double resolve_configurable_double(
+    const std::string & parameter_name, double config_value, double min_value) const
+  {
+    const double parameter_value = get_parameter(parameter_name).as_double();
+    const double value = parameter_value > 0.0 ? parameter_value : config_value;
+    if (value < min_value) {
+      throw std::runtime_error(
+        parameter_name + " must be >= " + std::to_string(min_value) + ", got " +
+        std::to_string(value));
+    }
+    return value;
+  }
+
   void swarm_state_callback(const SwarmState::SharedPtr msg)
   {
     state_by_id_.clear();
@@ -502,7 +663,14 @@ private:
     }
 
     planned_targets[leader_id_] = target;
-    publish_target(leader_id_, target, "formation_controller.leader_waypoints", true);
+    auto velocity = use_velocity_targets_ ?
+      velocity_toward_target(leader_state.position, target) : Vector3{};
+    if (use_velocity_targets_) {
+      velocity = apply_soft_separation_velocity(leader_id_, leader_state.position, velocity);
+    }
+    publish_target(
+      leader_id_, target, velocity, use_velocity_targets_,
+      "formation_controller.leader_waypoints", true, yaw_for_velocity(velocity));
   }
 
   void publish_follower_targets(
@@ -519,17 +687,28 @@ private:
         continue;
       }
 
-      const auto desired = target_from_leader(leader_state.position, drone.drone_id);
-      const auto target = prepare_target_point(follower_state->position, desired);
+      const auto predicted_leader_position = predict_position(leader_state);
+      const auto desired = target_from_leader(
+        predicted_leader_position, leader_state.yaw, drone.drone_id);
+      const auto target = use_velocity_targets_ ? clamp_altitude(desired) :
+        prepare_target_point(follower_state->position, desired);
       const auto reason = safety_violation(drone.drone_id, target, planned_targets);
       if (!reason.empty()) {
         publish_hold(drone.drone_id, follower_state, reason);
         continue;
       }
 
+      const auto raw_velocity = use_velocity_targets_ ?
+        raw_follower_velocity_command(drone.drone_id, *follower_state, leader_state, target) :
+        Vector3{};
+      const auto velocity = use_velocity_targets_ ?
+        smooth_velocity_command(drone.drone_id, raw_velocity) :
+        Vector3{};
       planned_targets[drone.drone_id] = target;
       publish_target(
-        drone.drone_id, target, "formation_controller." + formation_type_, true);
+        drone.drone_id, target, velocity, use_velocity_targets_,
+        "formation_controller." + formation_type_, true,
+        yaw_for_velocity(raw_velocity, leader_state.yaw));
     }
   }
 
@@ -547,14 +726,147 @@ private:
     }
   }
 
-  Point target_from_leader(const Point & leader_position, const std::string & drone_id) const
+  Vector3 velocity_toward_target(const Point & current, const Point & target) const
+  {
+    const auto delta = vector_between(current, target);
+    const auto target_distance = norm(delta);
+    if (target_distance <= 1e-6) {
+      return Vector3{};
+    }
+    return limit_vector(scale_vector(delta, control_rate_hz_), safety_.max_speed_m_s);
+  }
+
+  Point predict_position(const DroneState & state) const
+  {
+    const auto age = std::min(state_age_sec(state), leader_prediction_horizon_sec_);
+    return translate_point(state.position, scale_vector(state.velocity, age));
+  }
+
+  Point target_from_leader(
+    const Point & leader_position, double leader_yaw, const std::string & drone_id) const
   {
     const auto offset = offsets_.at(drone_id);
+    const auto offset_vector = offset_vector_for_frame(offset, leader_yaw);
     Point target{};
-    target.x = leader_position.x + offset[0];
-    target.y = leader_position.y + offset[1];
-    target.z = leader_position.z + offset[2];
+    target.x = leader_position.x + offset_vector.x;
+    target.y = leader_position.y + offset_vector.y;
+    target.z = leader_position.z + offset_vector.z;
     return target;
+  }
+
+  Vector3 offset_vector_for_frame(
+    const std::array<double, 3> & offset, double leader_yaw) const
+  {
+    if (offset_frame_ != "body_forward_right_up") {
+      return make_vector(offset[0], offset[1], offset[2]);
+    }
+
+    const auto forward = offset[0];
+    const auto right = offset[1];
+    const auto cos_yaw = std::cos(leader_yaw);
+    const auto sin_yaw = std::sin(leader_yaw);
+    return make_vector(
+      forward * cos_yaw + right * sin_yaw,
+      forward * sin_yaw - right * cos_yaw,
+      offset[2]);
+  }
+
+  Vector3 raw_follower_velocity_command(
+    const std::string & drone_id, const DroneState & follower_state,
+    const DroneState & leader_state, const Point & target) const
+  {
+    const auto position_error = vector_between(follower_state.position, target);
+    const auto velocity_error = subtract_vectors(leader_state.velocity, follower_state.velocity);
+    auto command = add_vectors(
+      leader_state.velocity,
+      add_vectors(
+        scale_vector(position_error, gains_.kp_position),
+        scale_vector(velocity_error, gains_.kd_velocity)));
+    command = apply_soft_separation_velocity(drone_id, follower_state.position, command);
+    return command;
+  }
+
+  Vector3 apply_soft_separation_velocity(
+    const std::string & drone_id, const Point & current_position, const Vector3 & command) const
+  {
+    const auto soft_radius = std::max(
+      safety_.min_inter_drone_distance_m * 2.0,
+      safety_.min_inter_drone_distance_m + 1.0);
+    Vector3 correction{};
+
+    for (const auto & [other_id, state] : state_by_id_) {
+      if (other_id == drone_id || !state_is_usable(&state)) {
+        continue;
+      }
+
+      const auto away = vector_between(state.position, current_position);
+      const auto separation = norm(away);
+      if (separation <= 1e-6 || separation >= soft_radius) {
+        continue;
+      }
+
+      auto strength = ((soft_radius - separation) / soft_radius) * safety_.max_speed_m_s;
+      if (separation < safety_.min_inter_drone_distance_m) {
+        strength = std::max(strength, safety_.max_speed_m_s * 0.8);
+      }
+      correction = add_vectors(correction, scale_vector(away, strength / separation));
+    }
+
+    return limit_vector(add_vectors(command, correction), safety_.max_speed_m_s);
+  }
+
+  Vector3 smooth_velocity_command(const std::string & drone_id, const Vector3 & raw_command)
+  {
+    const auto dt = 1.0 / control_rate_hz_;
+    auto command = limit_vector(raw_command, safety_.max_speed_m_s);
+    auto & history = control_history_by_drone_[drone_id];
+
+    if (history.has_velocity) {
+      auto acceleration = scale_vector(
+        subtract_vectors(command, history.filtered_velocity), 1.0 / dt);
+      acceleration = limit_vector(acceleration, smoothing_.max_acceleration_m_s2);
+
+      if (history.has_acceleration) {
+        auto jerk_step = subtract_vectors(acceleration, history.acceleration);
+        jerk_step = limit_vector(jerk_step, smoothing_.max_jerk_m_s3 * dt);
+        acceleration = add_vectors(history.acceleration, jerk_step);
+      }
+
+      command = add_vectors(history.filtered_velocity, scale_vector(acceleration, dt));
+      const auto alpha = smoothing_.low_pass_alpha;
+      command = add_vectors(
+        scale_vector(command, alpha),
+        scale_vector(history.filtered_velocity, 1.0 - alpha));
+      command = limit_vector(command, safety_.max_speed_m_s);
+
+      history.acceleration = scale_vector(
+        subtract_vectors(command, history.filtered_velocity), 1.0 / dt);
+      history.has_acceleration = true;
+    } else {
+      history.acceleration = Vector3{};
+      history.has_acceleration = true;
+    }
+
+    history.filtered_velocity = command;
+    history.has_velocity = true;
+    return command;
+  }
+
+  double yaw_for_velocity(const Vector3 & velocity) const
+  {
+    return yaw_for_velocity(velocity, leader_yaw_);
+  }
+
+  double yaw_for_velocity(const Vector3 & velocity, double fallback_yaw) const
+  {
+    if (yaw_mode_ != "face_velocity") {
+      return leader_yaw_;
+    }
+    const auto horizontal_speed = std::hypot(velocity.x, velocity.y);
+    if (horizontal_speed < 0.15) {
+      return fallback_yaw;
+    }
+    return std::atan2(velocity.y, velocity.x);
   }
 
   Point prepare_target_point(const Point & current_position, const Point & desired) const
@@ -601,15 +913,6 @@ private:
         distance(target, other_target) < safety_.min_inter_drone_distance_m)
       {
         return "planned_spacing_too_small:" + other_id;
-      }
-    }
-
-    for (const auto & [other_id, state] : state_by_id_) {
-      if (other_id == drone_id || !state_is_usable(&state)) {
-        continue;
-      }
-      if (distance(target, state.position) < safety_.min_inter_drone_distance_m) {
-        return "spacing_too_small:" + other_id;
       }
     }
 
@@ -668,6 +971,7 @@ private:
     const std::string & drone_id, const DroneState * state, const std::string & reason,
     bool active)
   {
+    control_history_by_drone_.erase(drone_id);
     const auto position = state ? copy_point(state->position) : Point{};
     const auto yaw = state ? state->yaw : leader_yaw_;
     log_hold_once(drone_id, reason);
@@ -694,6 +998,20 @@ private:
     const std::string & drone_id, const Point & position, const std::string & source,
     bool active, double yaw)
   {
+    publish_target(drone_id, position, Vector3{}, false, source, active, yaw);
+  }
+
+  void publish_target(
+    const std::string & drone_id, const Point & position, const Vector3 & velocity,
+    bool use_velocity, const std::string & source, bool active)
+  {
+    publish_target(drone_id, position, velocity, use_velocity, source, active, leader_yaw_);
+  }
+
+  void publish_target(
+    const std::string & drone_id, const Point & position, const Vector3 & velocity,
+    bool use_velocity, const std::string & source, bool active, double yaw)
+  {
     const auto publisher = target_publishers_.find(drone_id);
     if (publisher == target_publishers_.end()) {
       return;
@@ -709,7 +1027,9 @@ private:
     msg.drone_id = drone_id;
     msg.source = source;
     msg.position = copy_point(position);
+    msg.velocity = velocity;
     msg.yaw = yaw;
+    msg.use_velocity = use_velocity;
     msg.active = active;
     publisher->second->publish(msg);
   }
@@ -729,9 +1049,17 @@ private:
   double control_rate_hz_{10.0};
   double acceptance_radius_{0.45};
   double leader_state_timeout_sec_{2.0};
+  double leader_prediction_horizon_sec_{1.0};
+  std::string control_mode_{"position_velocity"};
+  std::string offset_frame_{"body_forward_right_up"};
+  std::string yaw_mode_{"fixed"};
+  bool use_velocity_targets_{true};
   SafetyConfig safety_;
+  ControlGains gains_;
+  SmoothingConfig smoothing_;
   std::map<std::string, DroneState> state_by_id_;
   std::size_t waypoint_index_{0};
+  std::map<std::string, ControlHistory> control_history_by_drone_;
   std::map<std::string, std::string> last_hold_reason_by_drone_;
   std::map<std::string, rclcpp::Publisher<FormationTarget>::SharedPtr> target_publishers_;
   rclcpp::Subscription<SwarmState>::SharedPtr swarm_sub_;

@@ -7,6 +7,14 @@ from swarm_msgs.msg import FormationTarget
 from px4_bridge.backend_base import BackendState, CommandResult, VehicleBackend
 
 
+def _limit_vector(vector: Vector3, max_norm: float) -> Vector3:
+    norm = sqrt(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z)
+    if norm <= max_norm or norm <= 1e-9:
+        return vector
+    scale = max_norm / norm
+    return Vector3(x=vector.x * scale, y=vector.y * scale, z=vector.z * scale)
+
+
 class MockBackend(VehicleBackend):
     """Small kinematic backend that can later be replaced by PX4 transports."""
 
@@ -128,6 +136,20 @@ class MockBackend(VehicleBackend):
         dy = self.target.position.y - self.position.y
         dz = self.target.position.z - self.position.z
         distance = sqrt(dx * dx + dy * dy + dz * dz)
+
+        if self.target.use_velocity:
+            position_gain = 0.6
+            command = Vector3(
+                x=self.target.velocity.x + position_gain * dx,
+                y=self.target.velocity.y + position_gain * dy,
+                z=self.target.velocity.z + position_gain * dz,
+            )
+            self.velocity = _limit_vector(command, self.max_speed_m_s)
+            self.position.x += self.velocity.x * dt
+            self.position.y += self.velocity.y * dt
+            self.position.z += self.velocity.z * dt
+            self.yaw = self.target.yaw
+            return self._state()
 
         if distance < 1e-6:
             self.velocity = Vector3()
