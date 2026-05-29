@@ -204,6 +204,7 @@ public:
   FormationController()
   : Node("formation_controller")
   {
+    // launch 参数优先级高于 YAML，便于同一套配置快速切换队形和调参。
     declare_parameter<std::string>("swarm_config_file", "");
     declare_parameter<std::string>("formations_config_file", "");
     declare_parameter<std::string>("waypoints_config_file", "");
@@ -242,6 +243,7 @@ public:
 
     validate_frame_config();
 
+    // 三个配置文件共同确定控制对象、队形几何和 leader 航线。
     const auto swarm_section = swarm_config_["swarm"];
     if (!swarm_section) {
       throw std::runtime_error("swarm_config_file must contain swarm section");
@@ -276,6 +278,7 @@ public:
     safety_ = load_safety_config();
     load_control_config(controller_section);
 
+    // formation_controller 运行在 /swarm 下，但目标必须发到每架飞机自己的 namespace。
     for (const auto & drone : drone_configs_) {
       target_publishers_[drone.drone_id] = create_publisher<FormationTarget>(
         "/" + drone.drone_namespace + "/formation_target", 10);
@@ -377,6 +380,7 @@ private:
   {
     std::map<std::string, std::array<double, 3>> offsets;
 
+    // generator 负责按无人机数量自动扩展队形；显式 offsets 用于局部覆盖。
     const auto generator_section = formation_section["generator"];
     if (generator_section) {
       offsets = generate_offsets(generator_section);
@@ -635,6 +639,7 @@ private:
 
   void timer_callback()
   {
+    // leader 状态不可用时，全队进入 hold，避免 follower 追逐过期目标。
     const auto * leader_state = find_state(leader_id_);
     if (!state_is_usable(leader_state)) {
       publish_leader_lost_hold();
@@ -687,6 +692,7 @@ private:
         continue;
       }
 
+      // follower 使用轻量常速度预测补偿状态延迟，减少编队在转弯和加速时的滞后。
       const auto predicted_leader_position = predict_position(leader_state);
       const auto desired = target_from_leader(
         predicted_leader_position, leader_state.yaw, drone.drone_id);
@@ -761,6 +767,8 @@ private:
       return make_vector(offset[0], offset[1], offset[2]);
     }
 
+    // body_forward_right_up 下，offset[0] 是 leader 前向，offset[1] 是右向。
+    // 这里按 leader yaw 旋转到 local_enu 世界坐标。
     const auto forward = offset[0];
     const auto right = offset[1];
     const auto cos_yaw = std::cos(leader_yaw);
@@ -775,6 +783,7 @@ private:
     const std::string & drone_id, const DroneState & follower_state,
     const DroneState & leader_state, const Point & target) const
   {
+    // 速度前馈取 leader 当前速度，PD 项负责消除 follower 相对目标的误差。
     const auto position_error = vector_between(follower_state.position, target);
     const auto velocity_error = subtract_vectors(leader_state.velocity, follower_state.velocity);
     auto command = add_vectors(
@@ -789,6 +798,7 @@ private:
   Vector3 apply_soft_separation_velocity(
     const std::string & drone_id, const Point & current_position, const Vector3 & command) const
   {
+    // 这是编队层的软分离修正，不替代 PX4 failsafe 或后续独立避障模块。
     const auto soft_radius = std::max(
       safety_.min_inter_drone_distance_m * 2.0,
       safety_.min_inter_drone_distance_m + 1.0);
@@ -817,6 +827,7 @@ private:
 
   Vector3 smooth_velocity_command(const std::string & drone_id, const Vector3 & raw_command)
   {
+    // 每架 follower 独立维护速度历史，用加速度、jerk 和低通限制压住 setpoint 突变。
     const auto dt = 1.0 / control_rate_hz_;
     auto command = limit_vector(raw_command, safety_.max_speed_m_s);
     auto & history = control_history_by_drone_[drone_id];
@@ -971,6 +982,7 @@ private:
     const std::string & drone_id, const DroneState * state, const std::string & reason,
     bool active)
   {
+    // hold 会清掉该机速度滤波历史，恢复控制时从当前状态重新平滑起步。
     control_history_by_drone_.erase(drone_id);
     const auto position = state ? copy_point(state->position) : Point{};
     const auto yaw = state ? state->yaw : leader_yaw_;

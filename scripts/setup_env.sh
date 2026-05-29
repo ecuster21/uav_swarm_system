@@ -9,6 +9,7 @@ export PX4_ROS_COM_WS="${PX4_ROS_COM_WS:-$HOME/px4_ros_com_ws}"
 
 export PATH="/usr/bin:/bin:/opt/ros/humble/bin:$PATH"
 
+# 只 source 固定版本环境和已构建工作区，不在这里安装或升级依赖。
 source /opt/ros/humble/setup.bash
 
 if [ -f "$PX4_ROS_COM_WS/install/setup.bash" ]; then

@@ -53,11 +53,13 @@ class SwarmManager(Node):
             swarm_config.get("frame_id", self.get_parameter("frame_id").value)
         )
 
+        # swarm_manager 只做低频状态汇总，不直接控制飞机。
         self.states: dict[str, DroneState] = {}
         self.last_seen: dict[str, Time] = {}
         self.swarm_pub = self.create_publisher(SwarmState, "/swarm/state", 10)
         self.state_subscriptions = []
 
+        # 订阅绝对 topic，避免 /swarm namespace 影响单机 /uav_N/state 的解析。
         for drone in self.drone_configs:
             topic = f"/{drone.namespace}/state"
             self.state_subscriptions.append(
@@ -91,6 +93,7 @@ class SwarmManager(Node):
             raise ValueError("swarm.drones must contain at least one drone")
 
         if not self.leader_id:
+            # 允许配置省略 leader_id，此时选择第一个标记为 leader 的无人机。
             for drone in drones:
                 if drone.role.lower() == "leader":
                     self.leader_id = drone.drone_id
@@ -118,6 +121,7 @@ class SwarmManager(Node):
                 last_seen = self.last_seen.get(drone.drone_id, now)
                 age_sec = (now - last_seen).nanoseconds / 1e9
                 if age_sec > self.state_timeout_sec:
+                    # 保留最后一次状态值，但将健康状态降级，便于上层 hold 而不是丢失坐标。
                     state.healthy = False
                     state.status_text = f"state timeout: {age_sec:.2f}s"
             drones.append(state)

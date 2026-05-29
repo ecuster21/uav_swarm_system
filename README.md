@@ -130,7 +130,7 @@ source scripts/setup_env.sh
 
 ```bash
 cd /home/jie/uav_swarm_system
-./scripts/start_px4_multi_sitl.sh 5 iris
+./scripts/start_px4_multi_sitl.sh 40 iris
 ```
 
 终端 3：ROS2 控制节点
@@ -138,7 +138,7 @@ cd /home/jie/uav_swarm_system
 ```bash
 cd /home/jie/uav_swarm_system
 source scripts/setup_env.sh
-ros2 launch formation_controller swarm_px4_uxrce.launch.py formation_type:=triangle vehicle_count:=5
+ros2 launch formation_controller swarm_px4_uxrce.launch.py formation_type:=triangle vehicle_count:=40
 ```
 
 如果 PX4 SITL 不是默认三机，例如已经运行 `./scripts/start_px4_multi_sitl.sh 5 iris`，ROS 控制 launch 也要指定同样数量：
@@ -154,10 +154,35 @@ ros2 launch formation_controller swarm_px4_uxrce.launch.py formation_type:=trian
 ```bash
 cd /home/jie/uav_swarm_system
 source scripts/setup_env.sh
-./scripts/swarm_arm_takeoff.sh
+./scripts/swarm_arm_takeoff.sh --count 40
 ```
 
-不传参数时，`swarm_arm_takeoff.sh` 和 `swarm_land_all.sh` 会优先从当前 ROS graph 的 `/uav_N/px4_bridge` 自动发现无人机；如果 ROS graph 里还没有 bridge，再从 `config/swarm.yaml` 的 `swarm.drones` 读取。也可以显式传入 `uav_1 uav_2 ...` 只操作指定飞机。
+`--count 40` 会直接操作 `uav_1..uav_40`，适合大规模 SITL，避免 ROS2 daemon / DDS discovery 在节点很多时暂时漏发现，导致脚本回退到三机静态配置。也可以使用简写：
+
+```bash
+./scripts/swarm_arm_takeoff.sh 40
+```
+
+不传参数时，`swarm_arm_takeoff.sh` 和 `swarm_land_all.sh` 会按以下顺序自动确定无人机列表：
+
+1. 从 `/swarm/state` 读取当前集群状态。
+2. 用 `ros2 node list --no-daemon --spin-time 5` 发现 `/uav_N/px4_bridge`。
+3. 从正在运行的 `swarm_px4_uxrce.launch.py vehicle_count:=N` 推断 `uav_1..uav_N`。
+4. 从正在运行的 bridge 进程或 PX4 `-i N` 进程推断 `uav_1..uav_N`。
+5. 最后才从 `config/swarm.yaml` 的 `swarm.drones` 读取静态列表。
+
+如果只想检查脚本会操作哪些飞机，不发送 arm/takeoff 命令：
+
+```bash
+./scripts/swarm_arm_takeoff.sh --dry-run
+./scripts/swarm_arm_takeoff.sh --dry-run --count 40
+```
+
+也可以显式传入无人机 ID，只操作指定飞机：
+
+```bash
+./scripts/swarm_arm_takeoff.sh uav_1 uav_2 uav_3
+```
 
 查看状态：
 
@@ -168,8 +193,10 @@ source scripts/setup_env.sh
 降落：
 
 ```bash
-./scripts/swarm_land_all.sh
+./scripts/swarm_land_all.sh --count 40
 ```
+
+降落脚本支持同样的发现规则、`--count N`、数字简写和 `--dry-run`。
 
 注意：
 

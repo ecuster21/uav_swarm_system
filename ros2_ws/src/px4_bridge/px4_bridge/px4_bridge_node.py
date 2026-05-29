@@ -31,6 +31,7 @@ class Px4Bridge(Node):
     def __init__(self) -> None:
         super().__init__("px4_bridge")
 
+        # 该 Python bridge 只用于 mock 链路；真实 PX4 通信走 px4_bridge_uxrce C++ 节点。
         self.declare_parameter("drone_id", "uav_1")
         self.declare_parameter("drone_namespace", "uav_1")
         self.declare_parameter("role", "unknown")
@@ -55,6 +56,7 @@ class Px4Bridge(Node):
         initial_position = _as_three_floats(self.get_parameter("initial_position").value)
         self.backend = self._create_backend(initial_position)
 
+        # 节点由 launch 放入 /uav_N namespace，相对 topic 最终解析为 /uav_N/state 等。
         self.state_pub = self.create_publisher(DroneState, "state", 10)
         self.control_target_pub = self.create_publisher(
             FormationTarget, f"{self.backend_type}/control_target", 10
@@ -108,6 +110,7 @@ class Px4Bridge(Node):
         self.last_target = msg
         self.control_target_pub.publish(msg)
 
+        # mock 模式下收到 FormationTarget 就立即执行；真实 PX4 链路需要持续 Offboard 流。
         self.last_command_target = msg
         self.last_command_time = self.get_clock().now()
         result = self.backend.goto_formation_target(msg)

@@ -37,6 +37,8 @@ constexpr uint8_t kSourceSystemCompanion = 1;
 constexpr uint8_t kSourceComponentCompanion = 191;
 constexpr double kPi = 3.14159265358979323846;
 
+// 将配置中的 PX4 话题前缀统一成绝对 ROS2 topic 前缀。
+// 例如 "px4_1" 会变成 "/px4_1"，后续拼接为 /px4_1/fmu/in/...。
 std::string normalize_prefix(std::string prefix)
 {
   if (prefix.empty()) {
@@ -100,6 +102,8 @@ double normalize_angle(double angle)
   return angle;
 }
 
+// PX4 local frame 使用 NED：x=north, y=east, z=down。
+// 项目内部统一使用 ENU：x=east, y=north, z=up。
 double ned_yaw_to_enu(double yaw_ned)
 {
   return normalize_angle(kPi / 2.0 - yaw_ned);
@@ -117,6 +121,9 @@ public:
   Px4UxrceBridge()
   : Node("px4_uxrce_bridge")
   {
+    // 单机身份参数由 launch 从 config/swarm.yaml 注入。
+    // ROS2 namespace 负责项目内隔离，例如 /uav_1/state；
+    // px4_topic_prefix 负责连接对应 PX4 SITL 实例，例如 /px4_1/fmu/out/...
     drone_id_ = declare_parameter<std::string>("drone_id", "uav_1");
     drone_namespace_ = declare_parameter<std::string>("drone_namespace", "uav_1");
     role_ = declare_parameter<std::string>("role", "unknown");
@@ -134,7 +141,11 @@ public:
       throw std::runtime_error("initial_position must contain exactly three values");
     }
 
+    // 本节点在 /uav_N namespace 下，相对 topic "state" 最终会变成 /uav_N/state。
     state_pub_ = create_publisher<swarm_msgs::msg::DroneState>("state", 10);
+
+    // 对 PX4 发布控制消息。这里使用 px4_topic_prefix 选择具体 PX4 SITL 实例，
+    // 不使用 /uav_N namespace，避免把项目内部命名和 PX4 原生 DDS 命名混在一起。
     command_pub_ = create_publisher<px4_msgs::msg::VehicleCommand>(
       px4_topic_prefix_ + "/fmu/in/vehicle_command", 10);
     offboard_control_mode_pub_ = create_publisher<px4_msgs::msg::OffboardControlMode>(
@@ -142,6 +153,7 @@ public:
     trajectory_setpoint_pub_ = create_publisher<px4_msgs::msg::TrajectorySetpoint>(
       px4_topic_prefix_ + "/fmu/in/trajectory_setpoint", 10);
 
+    // 从对应 PX4 实例读取遥测；SensorDataQoS 更适合高频数据，允许丢弃旧帧以降低延迟。
     local_position_sub_ = create_subscription<px4_msgs::msg::VehicleLocalPosition>(
       px4_topic_prefix_ + "/fmu/out/vehicle_local_position", rclcpp::SensorDataQoS(),
       [this](px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
@@ -163,6 +175,7 @@ public:
         handle_target(msg);
       });
 
+    // 对每架无人机暴露相同服务，例如 /uav_1/arm；服务只负责翻译成 PX4 VehicleCommand。
     services_.push_back(create_service<Trigger>("connect", [this](TriggerRequest, TriggerResponse response) {
         response->success = latest_local_position_ != nullptr || latest_vehicle_status_ != nullptr;
         response->message = response->success ? "uXRCE-DDS telemetry is available" :
@@ -213,6 +226,8 @@ public:
     state_timer_ = create_wall_timer(
       std::chrono::duration<double>(1.0 / std::max(state_rate_hz_, 1.0)),
       [this]() { publish_state(); });
+
+    // Offboard setpoint 必须持续发送；PX4 依赖稳定的数据流判断伴随计算机是否在线。
     offboard_timer_ = create_wall_timer(
       std::chrono::duration<double>(1.0 / std::max(offboard_rate_hz_, 2.0)),
       [this]() { publish_offboard_if_requested(); });
@@ -232,6 +247,7 @@ private:
 
   uint64_t px4_timestamp_us() const
   {
+    // 优先使用 PX4 timesync 提供的时间戳；还未收到 timesync 时退回 ROS 当前时间。
     if (latest_px4_timestamp_us_ > 0) {
       return latest_px4_timestamp_us_;
     }
@@ -248,6 +264,8 @@ private:
     double param6 = 0.0,
     float param7 = 0.0F)
   {
+    // MAVLink VehicleCommand 的 target_system 必须和当前 PX4 实例的 system_id 对齐。
+    // 多机时这是避免命令打到错误飞机上的关键字段。
     px4_msgs::msg::VehicleCommand msg{};
     msg.timestamp = px4_timestamp_us();
     msg.command = command;
@@ -268,10 +286,13 @@ private:
 
   void handle_target(const swarm_msgs::msg::FormationTarget::SharedPtr & msg)
   {
+    // formation_controller 会给每架机发布目标；如果消息显式写了其他 drone_id，则忽略。
     if (!msg->drone_id.empty() && msg->drone_id != drone_id_) {
       return;
     }
     if (!msg->active) {
+      // 飞机已解锁且位置有效时，收到 inactive target 不直接停掉 Offboard 流。
+      // 改为发布当前位置保持目标，降低 PX4 因 setpoint 中断退出 Offboard 的风险。
       if (is_armed() && local_position_valid()) {
         latest_target_ = make_current_position_hold_target(*msg);
         offboard_requested_ = true;
@@ -286,6 +307,7 @@ private:
     }
 
     latest_target_ = msg;
+    // enable_offboard_from_target=true 时，收到有效 FormationTarget 后自动开始 setpoint 流。
     if (enable_offboard_from_target_ && is_armed() && local_position_valid()) {
       offboard_requested_ = true;
     }
@@ -313,6 +335,8 @@ private:
     if (!latest_local_position_) {
       return point;
     }
+    // PX4 local_position 是相对本机 EKF 原点的 NED 坐标。
+    // initial_position 是 Gazebo 出生点在项目 ENU 坐标中的锚点。
     point.x = initial_position_[0] + latest_local_position_->y;
     point.y = initial_position_[1] + latest_local_position_->x;
     point.z = initial_position_[2] - latest_local_position_->z;
@@ -376,6 +400,7 @@ private:
 
   void publish_offboard_if_requested()
   {
+    // 只有已经收到 active FormationTarget 且明确请求 Offboard 时才发送 setpoint。
     if (!offboard_requested_ || !latest_target_ || !latest_target_->active) {
       return;
     }
@@ -396,6 +421,8 @@ private:
     control_mode.velocity = latest_target_->use_velocity;
     offboard_control_mode_pub_->publish(control_mode);
 
+    // FormationTarget 使用项目 ENU 坐标；PX4 TrajectorySetpoint 需要本机 local NED。
+    // 这里先减去 initial_position，再做 ENU -> NED 轴变换。
     px4_msgs::msg::TrajectorySetpoint setpoint{};
     setpoint.timestamp = control_mode.timestamp;
     setpoint.position[0] = static_cast<float>(latest_target_->position.y - initial_position_[1]);
@@ -415,6 +442,8 @@ private:
     setpoint.yawspeed = nan;
     trajectory_setpoint_pub_->publish(setpoint);
 
+    // PX4 进入 Offboard 前需要先收到一段连续 setpoint。
+    // warmup 完成后再发送 DO_SET_MODE，避免刚切模式就因为 setpoint 不足被拒绝。
     if (offboard_warmup_count_ < offboard_warmup_cycles_) {
       ++offboard_warmup_count_;
       return;

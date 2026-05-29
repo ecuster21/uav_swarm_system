@@ -16,7 +16,7 @@ def _limit_vector(vector: Vector3, max_norm: float) -> Vector3:
 
 
 class MockBackend(VehicleBackend):
-    """Small kinematic backend that can later be replaced by PX4 transports."""
+    """轻量运动学后端，用于不启动 PX4/Gazebo 时验证 ROS2 控制链路。"""
 
     def __init__(
         self,
@@ -138,6 +138,7 @@ class MockBackend(VehicleBackend):
         distance = sqrt(dx * dx + dy * dy + dz * dz)
 
         if self.target.use_velocity:
+            # 模拟真实 bridge 的 position + velocity 前馈模式，便于联调编队控制器。
             position_gain = 0.6
             command = Vector3(
                 x=self.target.velocity.x + position_gain * dx,

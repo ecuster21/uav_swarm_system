@@ -6,6 +6,7 @@ echo "Stopping UAV swarm SITL helper processes..."
 
 GAZEBO_MASTER_PORT="${GAZEBO_MASTER_PORT:-11345}"
 
+# 只清理本项目常用的 PX4/Gazebo 进程；如果端口被其他程序占用则退出提醒。
 list_gazebo_master_pids() {
     ss -ltnp "sport = :$GAZEBO_MASTER_PORT" 2>/dev/null \
         | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' \

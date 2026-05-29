@@ -66,6 +66,8 @@ def _generate_swarm_config(
     if vehicle_count <= 0:
         return swarm_data, None
 
+    # mock 多机使用与 PX4 SITL 相同的 uav_N/system_id/px4_N 编号规则，
+    # 这样从 mock 切到 uXRCE-DDS 时上层配置基本不变。
     generated = dict(swarm_data)
     swarm = dict(generated.get("swarm", {}))
     template_drones = swarm.get("drones", [])
@@ -134,6 +136,7 @@ def _launch_setup(context, *args, **kwargs):
     for drone in drones:
         drone_id = str(drone["id"])
         namespace = _normalize_namespace(str(drone.get("namespace", drone_id)))
+        # mock bridge 也放入 /uav_N namespace，保持话题形状与真实 bridge 一致。
         actions.append(
             Node(
                 package="px4_bridge",

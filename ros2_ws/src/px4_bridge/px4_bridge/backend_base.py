@@ -23,6 +23,8 @@ class CommandResult:
 
 
 class VehicleBackend:
+    """Bridge backend contract shared by mock and future real transports."""
+
     def connect(self) -> CommandResult:
         raise NotImplementedError
 

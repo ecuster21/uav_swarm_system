@@ -66,6 +66,8 @@ def _generate_swarm_config(
     if vehicle_count <= 0:
         return swarm_data, None
 
+    # vehicle_count 用于和 PX4 sitl_multiple_run.sh -n N 对齐：
+    # uav_N 是 ROS namespace，px4_N 是 PX4 DDS topic 前缀，system_id 使用 N+1。
     generated = dict(swarm_data)
     swarm = dict(generated.get("swarm", {}))
     template_drones = swarm.get("drones", [])
@@ -135,6 +137,7 @@ def _launch_setup(context, *args, **kwargs):
     for drone in drones:
         drone_id = str(drone["id"])
         namespace = _normalize_namespace(str(drone.get("namespace", drone_id)))
+        # 每架飞机一个 bridge 实例：项目 topic 走 /uav_N，PX4 topic 由 px4_topic_prefix 指向。
         actions.append(
             Node(
                 package="px4_bridge_uxrce",
