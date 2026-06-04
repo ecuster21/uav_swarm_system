@@ -66,8 +66,8 @@ def _generate_swarm_config(
     if vehicle_count <= 0:
         return swarm_data, None
 
-    # mock 多机使用与 PX4 SITL 相同的 uav_N/system_id/px4_N 编号规则，
-    # 这样从 mock 切到 uXRCE-DDS 时上层配置基本不变。
+    # Mock uses the same uav_N/system_id/px4_N numbering rule as PX4 SITL
+    # so upper layers stay consistent when switching backends.
     generated = dict(swarm_data)
     swarm = dict(generated.get("swarm", {}))
     template_drones = swarm.get("drones", [])
@@ -136,7 +136,6 @@ def _launch_setup(context, *args, **kwargs):
     for drone in drones:
         drone_id = str(drone["id"])
         namespace = _normalize_namespace(str(drone.get("namespace", drone_id)))
-        # mock bridge 也放入 /uav_N namespace，保持话题形状与真实 bridge 一致。
         actions.append(
             Node(
                 package="px4_bridge",
@@ -200,7 +199,7 @@ def _launch_setup(context, *args, **kwargs):
 
 
 def generate_launch_description() -> LaunchDescription:
-    package_share = Path(get_package_share_directory("formation_controller"))
+    package_share = Path(get_package_share_directory("swarm_bringup"))
     default_swarm_config = str(package_share / "config" / "swarm.yaml")
     default_formations_config = str(package_share / "config" / "formations.yaml")
     default_waypoints_config = str(package_share / "config" / "waypoints.yaml")

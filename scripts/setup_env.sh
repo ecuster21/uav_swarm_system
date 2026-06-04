@@ -32,5 +32,9 @@ echo "PX4_ROS_COM_WS=$PX4_ROS_COM_WS"
 echo "ROS_DISTRO=$ROS_DISTRO"
 echo "python3=$(command -v python3)"
 echo "Gazebo version:"
-gazebo --version || true
+if command -v gazebo >/dev/null 2>&1; then
+    gazebo --version || true
+else
+    echo "gazebo not installed"
+fi
 echo "======================================"

@@ -25,15 +25,4 @@ install(TARGETS formation_controller
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(DIRECTORY launch
-  DESTINATION share/${PROJECT_NAME}
-)
-
-install(FILES
-  ../../../config/swarm.yaml
-  ../../../config/formations.yaml
-  ../../../config/waypoints.yaml
-  DESTINATION share/${PROJECT_NAME}/config
-)
-
 ament_package()

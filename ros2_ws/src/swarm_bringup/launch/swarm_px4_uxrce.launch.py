@@ -31,12 +31,18 @@ def _as_float(value: str, default: float) -> float:
     return float(value)
 
 
+def _as_bool(value: str, default: bool) -> bool:
+    if value is None or str(value).strip() == "":
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _default_grid_cols(vehicle_count: int) -> int:
     return max(1, math.ceil(math.sqrt(vehicle_count)))
 
 
 def _spawn_xy(
-    instance_number: int,
+    local_index: int,
     vehicle_count: int,
     origin_x: float,
     origin_y: float,
@@ -45,7 +51,7 @@ def _spawn_xy(
     grid_cols: int,
 ) -> list[float]:
     cols = grid_cols if grid_cols > 0 else _default_grid_cols(vehicle_count)
-    zero_based = instance_number - 1
+    zero_based = local_index - 1
     row_index = zero_based // cols
     col_index = zero_based % cols
     return [
@@ -56,6 +62,7 @@ def _spawn_xy(
 
 def _generate_swarm_config(
     swarm_data: dict,
+    instance_start: int,
     vehicle_count: int,
     origin_x: float,
     origin_y: float,
@@ -66,8 +73,9 @@ def _generate_swarm_config(
     if vehicle_count <= 0:
         return swarm_data, None
 
-    # vehicle_count 用于和 PX4 sitl_multiple_run.sh -n N 对齐：
-    # uav_N 是 ROS namespace，px4_N 是 PX4 DDS topic 前缀，system_id 使用 N+1。
+    # instance_start/vehicle_count must match PX4 SITL startup:
+    # uav_N is the project namespace, px4_N is the PX4 DDS topic prefix,
+    # and system_id uses N+1.
     generated = dict(swarm_data)
     swarm = dict(generated.get("swarm", {}))
     template_drones = swarm.get("drones", [])
@@ -78,9 +86,10 @@ def _generate_swarm_config(
             default_z = float(default_position[2])
 
     drones = []
-    for instance_number in range(1, vehicle_count + 1):
+    for local_index in range(1, vehicle_count + 1):
+        instance_number = instance_start + local_index - 1
         x, y = _spawn_xy(
-            instance_number, vehicle_count, origin_x, origin_y, spacing_x, spacing_y, grid_cols
+            local_index, vehicle_count, origin_x, origin_y, spacing_x, spacing_y, grid_cols
         )
         drones.append(
             {
@@ -93,7 +102,7 @@ def _generate_swarm_config(
             }
         )
 
-    swarm["leader_id"] = "uav_1"
+    swarm["leader_id"] = f"uav_{instance_start}"
     swarm["drones"] = drones
     generated["swarm"] = swarm
 
@@ -110,7 +119,12 @@ def _launch_setup(context, *args, **kwargs):
     formations_config_file = LaunchConfiguration("formations_config_file").perform(context)
     waypoints_config_file = LaunchConfiguration("waypoints_config_file").perform(context)
     formation_type = LaunchConfiguration("formation_type").perform(context)
+    instance_start = _as_int(LaunchConfiguration("instance_start").perform(context), 1)
     vehicle_count = _as_int(LaunchConfiguration("vehicle_count").perform(context), 0)
+    enable_bridges = _as_bool(LaunchConfiguration("enable_bridges").perform(context), True)
+    enable_swarm_nodes = _as_bool(
+        LaunchConfiguration("enable_swarm_nodes").perform(context), True
+    )
     spawn_origin_x = _as_float(LaunchConfiguration("spawn_origin_x").perform(context), 0.0)
     spawn_origin_y = _as_float(LaunchConfiguration("spawn_origin_y").perform(context), 0.0)
     spawn_spacing_x = _as_float(LaunchConfiguration("spawn_spacing_x").perform(context), 3.0)
@@ -120,6 +134,7 @@ def _launch_setup(context, *args, **kwargs):
     swarm_data = _load_yaml(swarm_config_file)
     swarm_data, runtime_swarm_config_file = _generate_swarm_config(
         swarm_data,
+        instance_start,
         vehicle_count,
         spawn_origin_x,
         spawn_origin_y,
@@ -134,91 +149,92 @@ def _launch_setup(context, *args, **kwargs):
 
     actions = []
 
-    for drone in drones:
-        drone_id = str(drone["id"])
-        namespace = _normalize_namespace(str(drone.get("namespace", drone_id)))
-        # 每架飞机一个 bridge 实例：项目 topic 走 /uav_N，PX4 topic 由 px4_topic_prefix 指向。
-        actions.append(
-            Node(
-                package="px4_bridge_uxrce",
-                executable="px4_uxrce_bridge",
-                namespace=namespace,
-                name="px4_bridge",
-                output="screen",
-                parameters=[
-                    {
-                        "drone_id": drone_id,
-                        "drone_namespace": namespace,
-                        "role": str(drone.get("role", "unknown")),
-                        "frame_id": str(swarm.get("frame_id", "local_enu")),
-                        "system_id": int(drone.get("system_id", 1)),
-                        "px4_topic_prefix": str(
-                            drone.get("px4_topic_prefix", f"px4_{drone_id[-1]}")
-                        ),
-                        "initial_position": drone.get(
-                            "initial_position", [0.0, 0.0, 0.0]
-                        ),
-                        "state_rate_hz": float(
-                            uxrce_backend.get("state_rate_hz", 10.0)
-                        ),
-                        "offboard_rate_hz": float(
-                            uxrce_backend.get("offboard_rate_hz", 20.0)
-                        ),
-                        "enable_offboard_from_target": bool(
-                            uxrce_backend.get("enable_offboard_from_target", True)
-                        ),
-                        "offboard_warmup_cycles": int(
-                            uxrce_backend.get("offboard_warmup_cycles", 10)
-                        ),
-                        "takeoff_altitude_m": float(
-                            uxrce_backend.get("takeoff_altitude_m", 2.5)
-                        ),
-                    }
-                ],
+    if enable_bridges:
+        for drone in drones:
+            drone_id = str(drone["id"])
+            namespace = _normalize_namespace(str(drone.get("namespace", drone_id)))
+            actions.append(
+                Node(
+                    package="px4_bridge_uxrce",
+                    executable="px4_uxrce_bridge",
+                    namespace=namespace,
+                    name="px4_bridge",
+                    output="screen",
+                    parameters=[
+                        {
+                            "drone_id": drone_id,
+                            "drone_namespace": namespace,
+                            "role": str(drone.get("role", "unknown")),
+                            "frame_id": str(swarm.get("frame_id", "local_enu")),
+                            "system_id": int(drone.get("system_id", 1)),
+                            "px4_topic_prefix": str(
+                                drone.get("px4_topic_prefix", f"px4_{drone_id[-1]}")
+                            ),
+                            "initial_position": drone.get(
+                                "initial_position", [0.0, 0.0, 0.0]
+                            ),
+                            "state_rate_hz": float(
+                                uxrce_backend.get("state_rate_hz", 10.0)
+                            ),
+                            "offboard_rate_hz": float(
+                                uxrce_backend.get("offboard_rate_hz", 20.0)
+                            ),
+                            "enable_offboard_from_target": bool(
+                                uxrce_backend.get("enable_offboard_from_target", True)
+                            ),
+                            "offboard_warmup_cycles": int(
+                                uxrce_backend.get("offboard_warmup_cycles", 10)
+                            ),
+                            "takeoff_altitude_m": float(
+                                uxrce_backend.get("takeoff_altitude_m", 2.5)
+                            ),
+                        }
+                    ],
+                )
             )
-        )
 
-    actions.extend(
-        [
-            Node(
-                package="swarm_manager",
-                executable="swarm_manager",
-                namespace="swarm",
-                name="manager",
-                output="screen",
-                parameters=[
-                    {
-                        "swarm_config_file": effective_swarm_config_file,
-                        "publish_rate_hz": float(swarm.get("publish_rate_hz", 5.0)),
-                        "state_timeout_sec": float(
-                            swarm.get("state_timeout_sec", 2.0)
-                        ),
-                    }
-                ],
-            ),
-            Node(
-                package="formation_controller",
-                executable="formation_controller",
-                namespace="swarm",
-                name="formation_controller",
-                output="screen",
-                parameters=[
-                    {
-                        "swarm_config_file": effective_swarm_config_file,
-                        "formations_config_file": formations_config_file,
-                        "waypoints_config_file": waypoints_config_file,
-                        "formation_type": formation_type,
-                    }
-                ],
-            ),
-        ]
-    )
+    if enable_swarm_nodes:
+        actions.extend(
+            [
+                Node(
+                    package="swarm_manager",
+                    executable="swarm_manager",
+                    namespace="swarm",
+                    name="manager",
+                    output="screen",
+                    parameters=[
+                        {
+                            "swarm_config_file": effective_swarm_config_file,
+                            "publish_rate_hz": float(swarm.get("publish_rate_hz", 5.0)),
+                            "state_timeout_sec": float(
+                                swarm.get("state_timeout_sec", 2.0)
+                            ),
+                        }
+                    ],
+                ),
+                Node(
+                    package="formation_controller",
+                    executable="formation_controller",
+                    namespace="swarm",
+                    name="formation_controller",
+                    output="screen",
+                    parameters=[
+                        {
+                            "swarm_config_file": effective_swarm_config_file,
+                            "formations_config_file": formations_config_file,
+                            "waypoints_config_file": waypoints_config_file,
+                            "formation_type": formation_type,
+                        }
+                    ],
+                ),
+            ]
+        )
 
     return actions
 
 
 def generate_launch_description() -> LaunchDescription:
-    package_share = Path(get_package_share_directory("formation_controller"))
+    package_share = Path(get_package_share_directory("swarm_bringup"))
     default_swarm_config = str(package_share / "config" / "swarm.yaml")
     default_formations_config = str(package_share / "config" / "formations.yaml")
     default_waypoints_config = str(package_share / "config" / "waypoints.yaml")
@@ -248,7 +264,22 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "vehicle_count",
                 default_value="0",
-                description="Generate uav_1..uav_N at launch time when > 0; 0 uses swarm.yaml",
+                description="Generate uav_INSTANCE.. range at launch time when > 0; 0 uses swarm.yaml",
+            ),
+            DeclareLaunchArgument(
+                "instance_start",
+                default_value="1",
+                description="First PX4 SITL instance number used when vehicle_count > 0",
+            ),
+            DeclareLaunchArgument(
+                "enable_bridges",
+                default_value="true",
+                description="Start px4_bridge_uxrce nodes for generated/configured drones",
+            ),
+            DeclareLaunchArgument(
+                "enable_swarm_nodes",
+                default_value="true",
+                description="Start swarm_manager and formation_controller",
             ),
             DeclareLaunchArgument(
                 "spawn_origin_x",

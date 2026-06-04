@@ -20,6 +20,13 @@ die() {
     exit 1
 }
 
+source_with_nounset_disabled() {
+    set +u
+    # shellcheck disable=SC1090
+    source "$1"
+    set -u
+}
+
 usage() {
     cat <<'EOF'
 Usage:
@@ -231,8 +238,7 @@ prepare_project_workspace() {
     clone_or_update_repo "https://github.com/PX4/px4_msgs.git" "${px4_msgs_dir}" "${PX4_MSGS_BRANCH}"
 
     log "Installing ROS dependencies for project workspace"
-    # shellcheck disable=SC1090
-    source "/opt/ros/${ROS_DISTRO_TARGET}/setup.bash"
+    source_with_nounset_disabled "/opt/ros/${ROS_DISTRO_TARGET}/setup.bash"
     rosdep install --from-paths "${UAV_SWARM_ROOT}/ros2_ws/src" --ignore-src -r -y
 
     log "Building project ros2_ws"

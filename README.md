@@ -1,26 +1,22 @@
 # UAV Swarm System
 
-面向无人机集群飞行的 `ROS2 + PX4` 工程。当前主线是三机 PX4 SITL 仿真、ROS2 状态管理、leader-follower 编队控制，后续部署目标是 RK3588 伴随计算机。
+面向无人机集群飞行的 `ROS2 + PX4` 工程。当前主线是 RK3588 开发板上的 PX4 多机 SITL、MicroXRCE-DDS、ROS2 状态管理和 leader-follower 编队控制。
 
-## 当前状态
+当前已验证：
 
-已完成：
+- RK3588 / Ubuntu 22.04.4 arm64
+- PX4 Autopilot v1.14.4
+- ROS2 Humble
+- Gazebo Classic 11.10.2 headless SITL
+- Micro-XRCE-DDS-Agent 2.4.1
+- 单板 3 架 `iris` PX4 SITL OFFBOARD 编队
+- 两块 RK3588 分布式运行 PX4 SITL，并统一接入 Windows QGroundControl
 
-- ROS2 工作空间基础框架。
-- 三机 mock 仿真链路。
-- PX4 v1.14.4 多机 SITL 接入。
-- uXRCE-DDS / `px4_msgs` C++ bridge。
-- C++ leader-follower 编队控制器。
-- `triangle`、`line`、`column` 三种队形。
-
-当前推荐验证路径：
-
-- 首选：`px4_bridge_uxrce`，C++ uXRCE-DDS / Offboard 主线。
-- 保留：`px4_bridge` 的 mock backend，仅用于无 PX4 的快速 smoke test。
+详细原理和调试记录放在 `docs/`，README 只保留日常最常用入口。
 
 ## 固定环境
 
-不要自动升级或切换以下版本：
+不要自动升级或切换以下版本。
 
 | 项目 | 固定值 |
 |---|---|
@@ -28,32 +24,37 @@
 | PX4 | `/home/jie/PX4-Autopilot`, `v1.14.4` |
 | ROS2 | Humble |
 | Gazebo | Gazebo Classic `11.10.2` |
-| MicroXRCEAgent | `/home/jie/Micro-XRCE-DDS-Agent`, `2.4.1` |
-| 系统 | WSL2 Ubuntu 22.04 |
-| QGroundControl | Windows 主机 |
+| MicroXRCEAgent | `/usr/local/bin/MicroXRCEAgent`, `2.4.1` |
+| QGroundControl | Windows 主机运行 |
+| Windows GCS IP | `192.168.1.20` |
+| RK3588 A | `192.168.1.40` |
+| RK3588 B | `192.168.1.41` |
 
 约束：
 
-- 不使用 ROS1 作为主工程运行依赖。
-- 不切换 PX4 main、PX4 v1.15/v1.16、ROS2 Jazzy 或新 Gazebo。
-- 不把 PX4、MicroXRCEAgent、`px4_msgs` 复制进本项目。
+- 不切换 PX4 main、PX4 v1.15/v1.16、ROS2 Jazzy 或 Gazebo Garden/Harmonic/Ignition。
+- 主线不依赖 ROS1、`roscore`、`catkin_make` 或 ROS1 MAVROS。
+- PX4 负责飞控、姿态/位置控制、failsafe 和底层飞行安全。
+- RK3588 侧负责 ROS2、编队、任务、通信、感知和日志。
 - 所有真实飞行相关功能必须先在 SITL 验证。
 
-## 目录结构
+## 目录概览
 
 ```text
 uav_swarm_system/
 ├── config/
-│   ├── swarm.yaml          # 三机、namespace、system_id、backend 参数
-│   ├── formations.yaml     # 队形 offset、控制频率、安全限制
-│   └── waypoints.yaml      # leader 航点
-├── docs/                   # 架构、路线图、参考项目分析
+│   ├── swarm.yaml
+│   ├── formations.yaml
+│   └── waypoints.yaml
+├── docs/
 ├── ros2_ws/src/
-│   ├── swarm_msgs          # DroneState / SwarmState / FormationTarget
-│   ├── px4_bridge          # Python mock 验证层
-│   ├── px4_bridge_uxrce    # C++ PX4 uXRCE-DDS bridge
-│   ├── swarm_manager       # Python 低频集群状态汇总
-│   └── formation_controller # C++ leader-follower 编队控制
+│   ├── swarm_msgs
+│   ├── px4_msgs
+│   ├── px4_bridge              # mock
+│   ├── px4_bridge_uxrce        # real PX4 uXRCE-DDS bridge
+│   ├── swarm_manager
+│   ├── formation_controller
+│   └── swarm_bringup
 └── scripts/
     ├── setup_env.sh
     ├── start_micro_xrce_agent.sh
@@ -64,16 +65,16 @@ uav_swarm_system/
     └── swarm_status_once.sh
 ```
 
-## 构建
+## 环境加载
 
-每个新终端建议先使用项目环境脚本，避免 Anaconda 的 `python3` 干扰 ROS2 Humble：
+每个新终端先执行：
 
 ```bash
 cd /home/jie/uav_swarm_system
 source scripts/setup_env.sh
 ```
 
-构建工作空间：
+修改 ROS2 代码后重新构建：
 
 ```bash
 cd /home/jie/uav_swarm_system/ros2_ws
@@ -81,107 +82,65 @@ colcon build --cmake-args \
   -DPython3_EXECUTABLE=/usr/bin/python3 \
   -DPYTHON_EXECUTABLE=/usr/bin/python3 \
   -DPYTHON_INCLUDE_DIR=/usr/include/python3.10 \
-  -DPYTHON_LIBRARY=/usr/lib/x86_64-linux-gnu/libpython3.10.so
-```
+  -DPYTHON_LIBRARY=/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)/libpython3.10.so
 
-构建后重新 source：
-
-```bash
 cd /home/jie/uav_swarm_system
 source scripts/setup_env.sh
 ```
 
-## 快速运行 Mock
+## 快速 Mock 验证
 
 不需要 PX4、Gazebo 或 MicroXRCEAgent：
 
 ```bash
 cd /home/jie/uav_swarm_system
 source scripts/setup_env.sh
-ros2 launch formation_controller swarm_mock.launch.py formation_type:=triangle
+ros2 launch swarm_bringup swarm_mock.launch.py formation_type:=triangle
 ```
 
-可选队形：
+可选：
 
-```bash
+```text
 formation_type:=triangle
 formation_type:=line
 formation_type:=column
 ```
 
-## 运行 PX4 SITL uXRCE-DDS
+## 单板 PX4 SITL
 
-这是当前推荐主线。建议三个终端分别运行。
-
-关键前提：
-
-- 每个 ROS2 终端都必须 `source scripts/setup_env.sh`，不要只 source `/opt/ros/humble/setup.bash` 和 `ros2_ws/install/setup.bash`。uXRCE bridge 还需要 `/home/jie/px4_ros_com_ws/install` 中的 `px4_msgs` 运行库。
-- `ros2 launch formation_controller swarm_px4_uxrce.launch.py` 只启动状态桥接和编队目标发布，不会自动 arm/takeoff。飞机真正运动前必须显式执行 `./scripts/swarm_arm_takeoff.sh`。
+建议先跑 3 架，不要一开始直接跑大规模压力测试。
 
 终端 1：MicroXRCEAgent
 
 ```bash
 cd /home/jie/uav_swarm_system
-source scripts/setup_env.sh
 ./scripts/start_micro_xrce_agent.sh
 ```
 
-终端 2：PX4 多机 SITL
+终端 2：PX4/Gazebo
 
 ```bash
 cd /home/jie/uav_swarm_system
-./scripts/start_px4_multi_sitl.sh 40 iris
+./scripts/start_px4_multi_sitl.sh 3 iris
 ```
 
-终端 3：ROS2 控制节点
+默认 `HEADLESS=1`，只启动 `gzserver`，不启动 `gzclient`。
+
+终端 3：ROS2 bridge + swarm nodes
 
 ```bash
 cd /home/jie/uav_swarm_system
 source scripts/setup_env.sh
-ros2 launch formation_controller swarm_px4_uxrce.launch.py formation_type:=triangle vehicle_count:=40
+ros2 launch swarm_bringup swarm_px4_uxrce.launch.py \
+  formation_type:=triangle vehicle_count:=3
 ```
-
-如果 PX4 SITL 不是默认三机，例如已经运行 `./scripts/start_px4_multi_sitl.sh 5 iris`，ROS 控制 launch 也要指定同样数量：
-
-```bash
-ros2 launch formation_controller swarm_px4_uxrce.launch.py formation_type:=triangle vehicle_count:=5
-```
-
-`vehicle_count` 会按 PX4 `sitl_multiple_run.sh` 的默认网格规则自动生成 `uav_1..uav_N`、`system_id`、`px4_topic_prefix` 和初始 ENU 锚点；队形 offset 再由 `config/formations.yaml` 的 generator 自动生成。
 
 起飞：
 
 ```bash
 cd /home/jie/uav_swarm_system
 source scripts/setup_env.sh
-./scripts/swarm_arm_takeoff.sh --count 40
-```
-
-`--count 40` 会直接操作 `uav_1..uav_40`，适合大规模 SITL，避免 ROS2 daemon / DDS discovery 在节点很多时暂时漏发现，导致脚本回退到三机静态配置。也可以使用简写：
-
-```bash
-./scripts/swarm_arm_takeoff.sh 40
-```
-
-不传参数时，`swarm_arm_takeoff.sh` 和 `swarm_land_all.sh` 会按以下顺序自动确定无人机列表：
-
-1. 从 `/swarm/state` 读取当前集群状态。
-2. 用 `ros2 node list --no-daemon --spin-time 5` 发现 `/uav_N/px4_bridge`。
-3. 从正在运行的 `swarm_px4_uxrce.launch.py vehicle_count:=N` 推断 `uav_1..uav_N`。
-4. 从正在运行的 bridge 进程或 PX4 `-i N` 进程推断 `uav_1..uav_N`。
-5. 最后才从 `config/swarm.yaml` 的 `swarm.drones` 读取静态列表。
-
-如果只想检查脚本会操作哪些飞机，不发送 arm/takeoff 命令：
-
-```bash
-./scripts/swarm_arm_takeoff.sh --dry-run
-./scripts/swarm_arm_takeoff.sh --dry-run --count 40
-```
-
-也可以显式传入无人机 ID，只操作指定飞机：
-
-```bash
-./scripts/swarm_arm_takeoff.sh uav_1 uav_2 uav_3
+./scripts/swarm_arm_takeoff.sh --count 3
 ```
 
 查看状态：
@@ -190,126 +149,258 @@ source scripts/setup_env.sh
 ./scripts/swarm_status_once.sh
 ```
 
+降落和停止：
+
+```bash
+./scripts/swarm_land_all.sh --count 3
+./scripts/stop_sitl_stack.sh
+```
+
+## 两块板分布式 SITL
+
+核心原则：
+
+```text
+每架飞机一份 /uav_N/px4_bridge
+整个集群一份 /swarm/manager
+整个集群一份 /swarm/formation_controller
+```
+
+固定映射：
+
+```text
+板子   IP             PX4_INSTANCE_START   ROS2 instance_start   ROS2 ID   PX4话题   QGC身份
+A      192.168.1.40   1                    1                     uav_1    px4_1    MAV_SYS_ID 2
+B      192.168.1.41   2                    2                     uav_2    px4_2    MAV_SYS_ID 3
+```
+
+两块板都先启动本机 MicroXRCEAgent：
+
+```bash
+cd /home/jie/uav_swarm_system
+./scripts/start_micro_xrce_agent.sh
+```
+
+### A 板
+
+PX4/Gazebo：
+
+```bash
+PX4_INSTANCE_START=1 PX4_SPAWN_X=0 PX4_SPAWN_Y=3 \
+  ./scripts/start_px4_multi_sitl.sh 1 iris
+```
+
+bridge：
+
+```bash
+source scripts/setup_env.sh
+ros2 launch swarm_bringup swarm_px4_uxrce.launch.py \
+  instance_start:=1 vehicle_count:=1 \
+  enable_swarm_nodes:=false \
+  spawn_origin_x:=0 spawn_origin_y:=3
+```
+
+### B 板
+
+PX4/Gazebo：
+
+```bash
+PX4_INSTANCE_START=2 PX4_SPAWN_X=30 PX4_SPAWN_Y=3 \
+  ./scripts/start_px4_multi_sitl.sh 1 iris
+```
+
+bridge：
+
+```bash
+source scripts/setup_env.sh
+ros2 launch swarm_bringup swarm_px4_uxrce.launch.py \
+  instance_start:=2 vehicle_count:=1 \
+  enable_swarm_nodes:=false \
+  spawn_origin_x:=30 spawn_origin_y:=3
+```
+
+### 只在 A 板启动集群节点
+
+```bash
+source scripts/setup_env.sh
+ros2 launch swarm_bringup swarm_px4_uxrce.launch.py \
+  instance_start:=1 vehicle_count:=2 \
+  enable_bridges:=false enable_swarm_nodes:=true \
+  spawn_origin_x:=0 spawn_origin_y:=3 \
+  spawn_spacing_x:=30 spawn_spacing_y:=0
+```
+
+起飞：
+
+```bash
+./scripts/swarm_arm_takeoff.sh uav_1 uav_2
+```
+
 降落：
 
 ```bash
-./scripts/swarm_land_all.sh --count 40
+./scripts/swarm_land_all.sh uav_1 uav_2
 ```
 
-降落脚本支持同样的发现规则、`--count N`、数字简写和 `--dry-run`。
+## 多机 spawn 对齐规则
 
-注意：
+`PX4_SPAWN_X/Y` 和 ROS2 launch 的 `spawn_origin_x/y` 必须一致。
 
-- 不要同时启动多套 `swarm_mock.launch.py` 或 `swarm_px4_uxrce.launch.py`，否则同名节点会互相干扰。
-- `swarm_land_all.sh` 会先停止 autonomous `formation_controller`，再发布 inactive target，最后调用 `/land`。
-- 如果 Gazebo 或 PX4 端口残留，先运行 `./scripts/stop_sitl_stack.sh`。
+多机时 step 也要一致：
 
-## 核心话题
+```text
+PX4_INSTANCE_START      == ROS2 instance_start
+PX4 启动数量            == ROS2 vehicle_count
+PX4_SPAWN_X/Y           == ROS2 spawn_origin_x/y
+PX4_SPAWN_X/Y_STEP      == ROS2 spawn_spacing_x/y
+```
 
-| Topic | Type | 说明 |
-|---|---|---|
-| `/uav_N/state` | `swarm_msgs/msg/DroneState` | 单机状态，N 对应 `swarm.drones` 中的编号 |
-| `/swarm/state` | `swarm_msgs/msg/SwarmState` | 集群状态汇总 |
-| `/uav_N/formation_target` | `swarm_msgs/msg/FormationTarget` | 编队控制目标 |
-| `/px4_N/fmu/out/*` | `px4_msgs/msg/*` | PX4 uXRCE-DDS 输出 |
-| `/px4_N/fmu/in/*` | `px4_msgs/msg/*` | PX4 uXRCE-DDS 输入 |
-
-常用 service：
+例如 B 板从 instance 2 开始启动 3 架：
 
 ```bash
-ros2 service call /uav_1/arm std_srvs/srv/Trigger {}
-ros2 service call /uav_1/takeoff std_srvs/srv/Trigger {}
-ros2 service call /uav_1/land std_srvs/srv/Trigger {}
-ros2 service call /uav_1/hold std_srvs/srv/Trigger {}
-ros2 service call /uav_1/rtl std_srvs/srv/Trigger {}
+PX4_INSTANCE_START=2 \
+PX4_SPAWN_X=20 PX4_SPAWN_Y=3 \
+PX4_SPAWN_X_STEP=10 PX4_SPAWN_Y_STEP=0 \
+  ./scripts/start_px4_multi_sitl.sh 3 iris
 ```
 
-## 编队控制
+对应 bridge：
 
-`formation_controller` 是 C++ `rclcpp` 节点。
+```bash
+ros2 launch swarm_bringup swarm_px4_uxrce.launch.py \
+  instance_start:=2 vehicle_count:=3 \
+  enable_swarm_nodes:=false \
+  spawn_origin_x:=20 spawn_origin_y:=3 \
+  spawn_spacing_x:=10 spawn_spacing_y:=0
+```
 
-行为：
+这会生成：
 
-- `uav_1` 是 leader。
-- `swarm.drones` 中除 leader 外的无人机都是 follower。
-- leader 按 `config/waypoints.yaml` 中的航点循环飞行。
-- follower 根据 leader 位置和 `config/formations.yaml` 中的队形生成器自动生成目标点。
-- 当前 offset 是固定 `local_enu` 世界坐标偏移，暂不随 leader yaw 旋转。
+```text
+uav_2 -> px4_2 -> initial/spawn x=20
+uav_3 -> px4_3 -> initial/spawn x=30
+uav_4 -> px4_4 -> initial/spawn x=40
+```
 
-安全限制：
+## QGC 地图位置
 
-- 最大速度限制。
-- 最大/最小高度限制。
-- 最小机间距检查。
-- leader 暂时丢失时，健康飞机保持当前位置 active hold setpoint。
-- 本机 PX4 状态丢失或不健康时，停止发送 active target。
+如果要让 QGC 中的飞机出现在指定经纬高位置，设置 PX4 全球 home：
 
-坐标系：
+```bash
+PX4_HOME_LAT=31.230400 PX4_HOME_LON=121.473700 PX4_HOME_ALT=5 \
+PX4_INSTANCE_START=1 PX4_SPAWN_X=0 PX4_SPAWN_Y=3 \
+  ./scripts/start_px4_multi_sitl.sh 1 iris
+```
 
-- 上层 ROS2 编队控制统一使用 `local_enu`：`x=east`、`y=north`、`z=up`。
-- PX4 本地位置使用 `local_ned`：`x=north`、`y=east`、`z=down`。
-- bridge 层负责转换：`ENU.x=NED.y`，`ENU.y=NED.x`，`ENU.z=-NED.z`。
+多块板要显示在同一片地图区域时，使用同一组：
 
-## 初始位置与队形 Offset
+```text
+PX4_HOME_LAT
+PX4_HOME_LON
+PX4_HOME_ALT
+```
 
-PX4/Gazebo 的出生位置、`swarm.yaml` 的初始锚点、`formations.yaml` 的队形 offset 是三件不同的事：
+再用不同 `PX4_SPAWN_X/Y` 拉开本地距离。
 
-| 项目 | 配置位置 | 作用阶段 | 谁使用 | 坐标/含义 | 和编队的关系 |
-|---|---|---|---|---|---|
-| Gazebo 出生位置 | PX4 脚本 `sitl_multiple_run.sh` 内部生成，当前通过 `./scripts/start_px4_multi_sitl.sh 3 iris` 调用 | PX4 SITL 启动时 | Gazebo / PX4 SITL | 决定模型一开始在仿真世界哪里出现；常见三机类似 `(0,0)`、`(3,0)`、`(0,3)` | 只是出生摆放，不等于飞行队形 |
-| `initial_position` | `config/swarm.yaml` 的 `swarm.drones[*].initial_position` | ROS2 bridge 发布状态时 | `px4_bridge_uxrce` | 每架飞机的 ENU 初始锚点，用于把 PX4 local NED 状态对齐到项目 `local_enu` | 应尽量与 Gazebo 出生位置一致，否则 ROS 侧位置会带偏移 |
-| formation offset | `config/formations.yaml` 的 `formations.<type>.generator`，也可用 `offsets` 局部覆盖 | 编队控制运行时 | `formation_controller` | 每架飞机相对 leader 的目标偏移，格式为 `[x_east, y_north, z_up]` | 真正决定飞行中保持的三角、一字或纵队形 |
+## 常用检查
 
-调试原则：
+节点：
 
-- Gazebo 出生位置只影响起飞前飞机摆在哪里。
-- `initial_position` 影响 ROS2 看到的每架飞机局部 ENU 坐标。
-- formation offset 影响起飞后 follower 要追到 leader 的哪个相对位置。
-- 如果三者差异太大，飞机起飞后会先横移追队形，看起来像“绕一下”或“突然调整”。
+```bash
+ros2 node list | sort
+```
 
-## 配置文件
+分布式两板期望只有一份：
 
-`config/swarm.yaml`：
+```text
+/swarm/manager
+/swarm/formation_controller
+```
 
-- 无人机数量、namespace、role。
-- PX4 `system_id`。
-- uXRCE-DDS topic prefix。
-- 初始 ENU 锚点。
+每架飞机各有一份：
 
-`config/formations.yaml`：
+```text
+/uav_1/px4_bridge
+/uav_2/px4_bridge
+```
 
-- `triangle`、`line`、`column` 的 N 机 offset 自动生成参数。
-- 可选 `offsets` 覆盖某些无人机的特殊偏移。
-- `control_rate_hz`，当前默认 `2.0`。
-- 高度、速度、最小间距安全限制。
+PX4 DDS 话题：
 
-`config/waypoints.yaml`：
+```bash
+ros2 topic list | grep '/px4_'
+```
 
-- leader 航点。
-- 坐标系固定为 `local_enu`。
-- 当前默认方形航线，高度约 `2m`。
+状态和目标：
 
-## QGroundControl
+```bash
+ros2 topic echo /swarm/state --once
+ros2 topic echo /uav_1/state --once
+ros2 topic echo /uav_2/state --once
+ros2 topic echo /uav_1/formation_target --once
+ros2 topic echo /uav_2/formation_target --once
+```
 
-QGroundControl 运行在 Windows 主机，不在 WSL2 内部。PX4 SITL、ROS2 和 MicroXRCEAgent 运行在 WSL2，因此 QGC 连接需要考虑 WSL2 与 Windows 主机之间的 UDP 通信。
+如果目标是：
 
-本文件不硬编码 Windows 主机 IP。若 QGC 无法发现飞机，需要单独确认：
+```text
+active: false
+source: formation_controller.hold:px4_state_unhealthy
+```
 
-- Windows 防火墙。
-- WSL2 网络地址。
-- PX4 MAVLink GCS 端口。
-- 是否需要 UDP 转发。
+优先检查是否重复启动了 `/swarm/manager` 或 `/swarm/formation_controller`，以及 `PX4_INSTANCE_START` 和 ROS2 `instance_start` 是否对齐。
 
-## 开发规则
+## 核心话题和服务
 
-- `swarm_manager` 这类低频状态管理可用 Python。
-- mock 快速验证可用 Python。
-- uXRCE-DDS、`px4_msgs`、Offboard setpoint、编队控制核心、安全监控优先 C++。
-- 当前 `formation_controller` 已迁移为 C++，不要再回退到 Python 编队核心。
+| Topic/Service | 说明 |
+|---|---|
+| `/px4_N/fmu/out/*` | PX4 uXRCE-DDS 输出 |
+| `/px4_N/fmu/in/*` | PX4 uXRCE-DDS 输入 |
+| `/uav_N/state` | 单机状态 |
+| `/swarm/state` | 集群状态 |
+| `/uav_N/formation_target` | 编队目标 |
+| `/uav_N/arm` | 解锁服务 |
+| `/uav_N/takeoff` | 起飞服务 |
+| `/uav_N/land` | 降落服务 |
+| `/uav_N/hold` | hold/loiter 服务 |
+| `/uav_N/rtl` | 返航服务 |
 
-更多背景见：
+## 详细文档
 
-- `AGENTS.md`
+优先看这几份：
+
+- `docs/debug/daily_review_2026-06-03.md`
+- `docs/debug/px4_ros2_dds_runtime_concepts.md`
+- `docs/debug/waypoints_initial_position_and_rates.md`
+- `docs/debug/control_flow_and_node_interfaces.md`
+- `docs/debug/rk3588_distributed_sitl_debug_2026-06-02.md`
+
+其他文档：
+
+- `docs/rk3588_full_sitl_install.md`
+- `docs/debug/rk3588_install_log_2026-05-31.md`
 - `docs/architecture.md`
 - `docs/roadmap.md`
 - `docs/reference_analysis.md`
+- `AGENTS.md`
+
+## 清理
+
+停止 PX4/Gazebo：
+
+```bash
+./scripts/stop_sitl_stack.sh
+```
+
+检查残留进程：
+
+```bash
+pgrep -af 'px4|gzserver|gzclient|gazebo|MicroXRCEAgent'
+```
+
+不要删除：
+
+```text
+/home/jie/PX4-Autopilot
+```
+
+PX4 SITL 可执行文件、Gazebo 插件、模型、world 和启动脚本仍在该目录中。

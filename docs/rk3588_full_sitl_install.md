@@ -11,6 +11,14 @@
 
 这套环境用于板端 SITL、领导验收和算法调试。真实飞行时不要运行 Gazebo 或 PX4 SITL；真实飞行模式只运行 ROS2、MicroXRCEAgent、任务/编队/感知/日志节点，PX4 固件运行在飞控硬件上。
 
+## 实际安装记录
+
+2026-05-31 在 `topeet` RK3588 开发板上的实际安装、编译、验证和资源清理记录见：
+
+```text
+docs/debug/rk3588_install_log_2026-05-31.md
+```
+
 ## 给开发板 Codex 的执行指令
 
 在 RK3588 上打开终端，确认本项目位于：
@@ -126,7 +134,7 @@ source scripts/setup_env.sh
 ```bash
 cd /home/jie/uav_swarm_system
 source scripts/setup_env.sh
-ros2 launch formation_controller swarm_px4_uxrce.launch.py formation_type:=triangle vehicle_count:=3
+ros2 launch swarm_bringup swarm_px4_uxrce.launch.py formation_type:=triangle vehicle_count:=3
 ```
 
 起飞前先 dry run：
