@@ -17,7 +17,7 @@ venv/
 logs/
 
 # Large external references are local only by default
-references/*/.git/
+references/
 
 # PX4 and external dependencies should not be copied here
 PX4-Autopilot/
