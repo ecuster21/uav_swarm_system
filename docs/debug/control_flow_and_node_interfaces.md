@@ -394,7 +394,7 @@ PX4 Offboard 不是发一次目标就结束。它要求 companion computer 持�
 QGC 地图显示使用 PX4 上报的 GPS 经纬高，PX4/Gazebo Classic 的全球 home 可以在启动 SITL 时设置：
 
 ```bash
-PX4_HOME_LAT=31.230400 PX4_HOME_LON=121.473700 PX4_HOME_ALT=5 \
+PX4_HOME_LAT=34.566096 PX4_HOME_LON=110.092301 PX4_HOME_ALT=350 \
   ./scripts/start_px4_multi_sitl.sh 1 iris
 ```
 

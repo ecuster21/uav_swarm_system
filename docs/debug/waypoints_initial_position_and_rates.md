@@ -178,6 +178,7 @@ B 从 20 飞到 120
 PX4/Gazebo 启动时：
 
 ```bash
+PX4_HOME_LAT=34.566096 PX4_HOME_LON=110.092301 PX4_HOME_ALT=350 \
 PX4_INSTANCE_START=2 PX4_SPAWN_X=20 PX4_SPAWN_Y=3 \
   ./scripts/start_px4_multi_sitl.sh 1 iris
 ```
@@ -194,6 +195,7 @@ ros2 launch swarm_bringup swarm_px4_uxrce.launch.py \
 如果 B 板 PX4 用的是：
 
 ```bash
+PX4_HOME_LAT=34.566096 PX4_HOME_LON=110.092301 PX4_HOME_ALT=350 \
 PX4_INSTANCE_START=2 PX4_SPAWN_X=30 PX4_SPAWN_Y=3 \
   ./scripts/start_px4_multi_sitl.sh 1 iris
 ```
@@ -210,6 +212,7 @@ ros2 launch swarm_bringup swarm_px4_uxrce.launch.py \
 A 板同理：
 
 ```bash
+PX4_HOME_LAT=34.566096 PX4_HOME_LON=110.092301 PX4_HOME_ALT=350 \
 PX4_INSTANCE_START=1 PX4_SPAWN_X=0 PX4_SPAWN_Y=3 \
   ./scripts/start_px4_multi_sitl.sh 1 iris
 ```

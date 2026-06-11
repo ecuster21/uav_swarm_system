@@ -19,6 +19,12 @@
 docs/debug/rk3588_install_log_2026-05-31.md
 ```
 
+安装过程中遇到过的问题、原因和处理方式见：
+
+```text
+docs/debug/rk3588_full_sitl_install_issues.md
+```
+
 ## 给开发板 Codex 的执行指令
 
 在 RK3588 上打开终端，确认本项目位于：

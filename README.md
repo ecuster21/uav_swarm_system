@@ -43,6 +43,7 @@
 ```text
 uav_swarm_system/
 ├── config/
+│   ├── cluster_boards.yaml
 │   ├── swarm.yaml
 │   ├── formations.yaml
 │   └── waypoints.yaml
@@ -60,6 +61,7 @@ uav_swarm_system/
     ├── start_micro_xrce_agent.sh
     ├── start_px4_multi_sitl.sh
     ├── stop_sitl_stack.sh
+    ├── swarm_cluster.sh
     ├── swarm_arm_takeoff.sh
     ├── swarm_land_all.sh
     └── swarm_status_once.sh
@@ -74,19 +76,187 @@ cd /home/jie/uav_swarm_system
 source scripts/setup_env.sh
 ```
 
-修改 ROS2 代码后重新构建：
+## 首次构建
+
+### 新开发板完整安装
+
+全新 RK3588 开发板优先使用安装脚本。它会安装 ROS2 Humble、MicroXRCEAgent 2.4.1、PX4 v1.14.4、Gazebo Classic 11、`px4_msgs release/1.14`，并构建本项目 `ros2_ws`。
+
+```bash
+cd /home/jie/uav_swarm_system
+./scripts/rk3588_install_full_sitl.sh full-sitl
+```
+
+如果只部署伴随计算机飞行环境，不在该板运行 PX4/Gazebo SITL：
+
+```bash
+./scripts/rk3588_install_full_sitl.sh flight-only
+```
+
+详细安装记录见 `docs/rk3588_full_sitl_install.md`。
+
+### 已有环境下构建 ROS2 工作空间
+
+如果 ROS2、PX4、MicroXRCEAgent、Gazebo 已经安装好，只需要构建本项目：
 
 ```bash
 cd /home/jie/uav_swarm_system/ros2_ws
-colcon build --cmake-args \
+source /opt/ros/humble/setup.bash
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install --cmake-args \
   -DPython3_EXECUTABLE=/usr/bin/python3 \
   -DPYTHON_EXECUTABLE=/usr/bin/python3 \
   -DPYTHON_INCLUDE_DIR=/usr/include/python3.10 \
   -DPYTHON_LIBRARY=/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)/libpython3.10.so
+```
 
+构建成功后重新加载项目环境：
+
+```bash
 cd /home/jie/uav_swarm_system
 source scripts/setup_env.sh
 ```
+
+快速确认包已安装到 ROS2 环境：
+
+```bash
+ros2 pkg list | grep -E 'swarm_bringup|px4_bridge_uxrce|formation_controller'
+ros2 launch swarm_bringup swarm_px4_uxrce.launch.py --show-args
+```
+
+### 什么时候需要重新构建
+
+修改这些内容后需要重新构建：
+
+- `ros2_ws/src/*` 下的 C++ 或 Python 包代码。
+- `swarm_msgs` 消息定义。
+- 新增或删除 ROS2 package。
+- 修改 `CMakeLists.txt` 或 `package.xml`。
+
+只修改这些内容通常不需要重新构建：
+
+- `config/*.yaml`
+- `docs/*`
+- `README.md`
+- `scripts/*.sh`，除非脚本依赖新安装的包或新生成的接口。
+
+## PX4-Autopilot 构建和机型参数
+
+PX4 源码不在本项目里，固定路径是：
+
+```text
+/home/jie/PX4-Autopilot
+```
+
+### 构建 PX4 SITL
+
+首次安装脚本会自动构建 PX4。手动重新构建时执行：
+
+```bash
+cd /home/jie/PX4-Autopilot
+git checkout v1.14.4
+DONT_RUN=1 HEADLESS=1 make px4_sitl gazebo-classic
+```
+
+`DONT_RUN=1` 表示只编译，不自动启动仿真。
+
+构建产物检查：
+
+```bash
+ls -lh /home/jie/PX4-Autopilot/build/px4_sitl_default/bin/px4
+ls /home/jie/PX4-Autopilot/build/px4_sitl_default/build_gazebo-classic/*.so
+```
+
+### 改机型
+
+`start_px4_multi_sitl.sh` 的第二个参数是 Gazebo Classic model：
+
+```bash
+./scripts/start_px4_multi_sitl.sh <数量> <模型>
+```
+
+默认是：
+
+```bash
+./scripts/start_px4_multi_sitl.sh 3 iris
+```
+
+例如换成 `typhoon_h480`：
+
+```bash
+PX4_HOME_LAT=34.566096 PX4_HOME_LON=110.092301 PX4_HOME_ALT=350 \
+PX4_INSTANCE_START=1 PX4_SPAWN_X=0 PX4_SPAWN_Y=3 \
+  ./scripts/start_px4_multi_sitl.sh 1 typhoon_h480
+```
+
+模型必须同时满足两点：
+
+```text
+1. 有 Gazebo model:
+   /home/jie/PX4-Autopilot/Tools/simulation/gazebo-classic/sitl_gazebo-classic/models/<model>
+
+2. 有 PX4 airframe:
+   /home/jie/PX4-Autopilot/ROMFS/px4fmu_common/init.d-posix/airframes/*_gazebo-classic_<model>
+```
+
+检查可用模型：
+
+```bash
+ls /home/jie/PX4-Autopilot/Tools/simulation/gazebo-classic/sitl_gazebo-classic/models
+ls /home/jie/PX4-Autopilot/ROMFS/px4fmu_common/init.d-posix/airframes/*gazebo-classic*
+```
+
+注意：当前编队控制和起飞脚本主要按多旋翼 `iris` 验证。固定翼、车、船、VTOL 等模型即使能启动，也不一定适配当前 leader-follower OFFBOARD 编队逻辑。
+
+### 改 world
+
+Gazebo world 用 `GAZEBO_WORLD` 指定，不带 `.world` 后缀：
+
+```bash
+GAZEBO_WORLD=ksql_airport \
+PX4_HOME_LAT=34.566096 PX4_HOME_LON=110.092301 PX4_HOME_ALT=350 \
+PX4_INSTANCE_START=1 PX4_SPAWN_X=0 PX4_SPAWN_Y=3 \
+  ./scripts/start_px4_multi_sitl.sh 1 iris
+```
+
+可用 world：
+
+```bash
+ls /home/jie/PX4-Autopilot/Tools/simulation/gazebo-classic/sitl_gazebo-classic/worlds
+```
+
+### 改启动参数但不重编 PX4
+
+这些参数通常只需要重启 SITL，不需要重新编译 PX4：
+
+| 参数 | 作用 |
+|---|---|
+| `PX4_HOME_LAT/LON/ALT` | QGC 地图全球 home 经纬高 |
+| `PX4_INSTANCE_START` | PX4 instance 起始编号 |
+| `PX4_SPAWN_X/Y` | 第一架 Gazebo 出生位置 |
+| `PX4_SPAWN_X/Y_STEP` | 多机出生间距 |
+| `GAZEBO_WORLD` | Gazebo world |
+| `HEADLESS` | 是否启动 `gzclient` |
+| `PX4_TARGET` | 使用哪个 PX4 build 目录，默认 `px4_sitl_default` |
+
+### 修改 PX4 文件后什么时候重编
+
+需要重新构建 PX4：
+
+- 修改 PX4 C/C++ 飞控模块。
+- 修改 PX4 Gazebo 插件源码。
+- 修改 `ROMFS/px4fmu_common/init.d-posix/airframes/*`。
+- 修改 `ROMFS/px4fmu_common/init.d-posix/px4-rc.*` 后希望同步到 build 目录。
+- 新增 airframe，或者让新模型通过 `PX4_SIM_MODEL=gazebo-classic_<model>` 自动匹配。
+
+通常只重启即可：
+
+- 修改 world 文件。
+- 修改 model 的 `.sdf.jinja`。
+- 修改本项目 `config/*.yaml`。
+- 调整 `PX4_HOME_*`、`PX4_SPAWN_*`、`GAZEBO_WORLD` 等启动环境变量。
+
+临时改 PX4 参数可以通过 QGC 或 PX4 shell 的 `param set`，但这类修改可能只保存在对应 instance 的 `rootfs` 参数文件里。需要可复现运行时，优先写进启动脚本、airframe 或项目配置，并记录到 docs。
 
 ## 快速 Mock 验证
 
@@ -121,7 +291,8 @@ cd /home/jie/uav_swarm_system
 
 ```bash
 cd /home/jie/uav_swarm_system
-./scripts/start_px4_multi_sitl.sh 3 iris
+PX4_HOME_LAT=34.566096 PX4_HOME_LON=110.092301 PX4_HOME_ALT=350 \
+  ./scripts/start_px4_multi_sitl.sh 3 iris
 ```
 
 默认 `HEADLESS=1`，只启动 `gzserver`，不启动 `gzclient`。
@@ -186,6 +357,7 @@ cd /home/jie/uav_swarm_system
 PX4/Gazebo：
 
 ```bash
+PX4_HOME_LAT=34.566096 PX4_HOME_LON=110.092301 PX4_HOME_ALT=350 \
 PX4_INSTANCE_START=1 PX4_SPAWN_X=0 PX4_SPAWN_Y=3 \
   ./scripts/start_px4_multi_sitl.sh 1 iris
 ```
@@ -205,6 +377,7 @@ ros2 launch swarm_bringup swarm_px4_uxrce.launch.py \
 PX4/Gazebo：
 
 ```bash
+PX4_HOME_LAT=34.566096 PX4_HOME_LON=110.092301 PX4_HOME_ALT=350 \
 PX4_INSTANCE_START=2 PX4_SPAWN_X=30 PX4_SPAWN_Y=3 \
   ./scripts/start_px4_multi_sitl.sh 1 iris
 ```
@@ -242,6 +415,85 @@ ros2 launch swarm_bringup swarm_px4_uxrce.launch.py \
 ./scripts/swarm_land_all.sh uav_1 uav_2
 ```
 
+## 11 块板 SSH 一键启动
+
+当开发板镜像一致、项目路径一致、只有 IP 不同时，推荐使用集中编排脚本：
+
+```bash
+cd /home/jie/uav_swarm_system
+./scripts/swarm_cluster.sh dry-run
+./scripts/swarm_cluster.sh check
+./scripts/swarm_cluster.sh start
+```
+
+默认配置文件：
+
+```text
+config/cluster_boards.yaml
+```
+
+默认规模：
+
+```text
+IP: 192.168.1.40 ~ 192.168.1.50
+SSH user: jie
+每板: 4 架 PX4 SITL
+总数: 44 架
+主控板: 192.168.1.40
+```
+
+编号规则：
+
+```text
+192.168.1.40 -> uav_1  ~ uav_4,  px4_1  ~ px4_4,  MAV_SYS_ID 2  ~ 5,  spawn_x=0
+192.168.1.41 -> uav_5  ~ uav_8,  px4_5  ~ px4_8,  MAV_SYS_ID 6  ~ 9,  spawn_x=40
+...
+192.168.1.50 -> uav_41 ~ uav_44, px4_41 ~ px4_44, MAV_SYS_ID 42 ~ 45, spawn_x=400
+```
+
+脚本动作：
+
+| 命令 | 作用 |
+|---|---|
+| `./scripts/swarm_cluster.sh dry-run` | 打印 11 块板映射和远程命令，不启动 |
+| `./scripts/swarm_cluster.sh check` | 检查 SSH、项目路径、PX4、ROS2、MicroXRCEAgent |
+| `./scripts/swarm_cluster.sh start` | 并发启动所有板子的 Agent、PX4/Gazebo、bridge，并在 A 板启动 swarm 节点 |
+| `./scripts/swarm_cluster.sh status` | 查看各板进程状态 |
+| `./scripts/swarm_cluster.sh stop` | 停止各板 PX4/Gazebo、MicroXRCEAgent 和 swarm launch |
+
+先用两块板验证：
+
+```bash
+./scripts/swarm_cluster.sh start --limit 2
+./scripts/swarm_cluster.sh status --limit 2
+```
+
+确认无误后启动完整 11 板：
+
+```bash
+./scripts/swarm_cluster.sh start
+./scripts/swarm_cluster.sh status
+```
+
+起飞：
+
+```bash
+./scripts/swarm_arm_takeoff.sh --count 44
+```
+
+日志位于每块板本机：
+
+```text
+/home/jie/uav_swarm_system/logs/cluster/<run_id>/
+```
+
+使用前提：
+
+- A 板到其他 10 块板已经配置 `jie` 用户免密 SSH。
+- 所有板项目路径都是 `/home/jie/uav_swarm_system`。
+- 所有板 ROS2 DDS 网络互通，`ROS_DOMAIN_ID` 保持一致。
+- 只在 A 板启动一份 `/swarm/manager` 和 `/swarm/formation_controller`。
+
 ## 多机 spawn 对齐规则
 
 `PX4_SPAWN_X/Y` 和 ROS2 launch 的 `spawn_origin_x/y` 必须一致。
@@ -258,6 +510,7 @@ PX4_SPAWN_X/Y_STEP      == ROS2 spawn_spacing_x/y
 例如 B 板从 instance 2 开始启动 3 架：
 
 ```bash
+PX4_HOME_LAT=34.566096 PX4_HOME_LON=110.092301 PX4_HOME_ALT=350 \
 PX4_INSTANCE_START=2 \
 PX4_SPAWN_X=20 PX4_SPAWN_Y=3 \
 PX4_SPAWN_X_STEP=10 PX4_SPAWN_Y_STEP=0 \
@@ -287,7 +540,7 @@ uav_4 -> px4_4 -> initial/spawn x=40
 如果要让 QGC 中的飞机出现在指定经纬高位置，设置 PX4 全球 home：
 
 ```bash
-PX4_HOME_LAT=31.230400 PX4_HOME_LON=121.473700 PX4_HOME_ALT=5 \
+PX4_HOME_LAT=34.566096 PX4_HOME_LON=110.092301 PX4_HOME_ALT=350 \
 PX4_INSTANCE_START=1 PX4_SPAWN_X=0 PX4_SPAWN_Y=3 \
   ./scripts/start_px4_multi_sitl.sh 1 iris
 ```
@@ -369,6 +622,7 @@ source: formation_controller.hold:px4_state_unhealthy
 优先看这几份：
 
 - `docs/debug/daily_review_2026-06-03.md`
+- `docs/debug/cluster_ssh_orchestration_2026-06-09.md`
 - `docs/debug/px4_ros2_dds_runtime_concepts.md`
 - `docs/debug/waypoints_initial_position_and_rates.md`
 - `docs/debug/control_flow_and_node_interfaces.md`
@@ -377,6 +631,7 @@ source: formation_controller.hold:px4_state_unhealthy
 其他文档：
 
 - `docs/rk3588_full_sitl_install.md`
+- `docs/debug/rk3588_full_sitl_install_issues.md`
 - `docs/debug/rk3588_install_log_2026-05-31.md`
 - `docs/architecture.md`
 - `docs/roadmap.md`

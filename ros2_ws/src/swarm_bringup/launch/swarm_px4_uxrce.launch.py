@@ -79,30 +79,37 @@ def _generate_swarm_config(
     generated = dict(swarm_data)
     swarm = dict(generated.get("swarm", {}))
     template_drones = swarm.get("drones", [])
+    configured_leader_id = str(swarm.get("leader_id", "")).strip()
     default_z = 1.0
     if template_drones:
         default_position = template_drones[0].get("initial_position", [0.0, 0.0, default_z])
         if len(default_position) >= 3:
             default_z = float(default_position[2])
 
+    generated_ids = {
+        f"uav_{instance_start + local_index - 1}" for local_index in range(1, vehicle_count + 1)
+    }
+    leader_id = configured_leader_id if configured_leader_id in generated_ids else f"uav_{instance_start}"
+
     drones = []
     for local_index in range(1, vehicle_count + 1):
         instance_number = instance_start + local_index - 1
+        drone_id = f"uav_{instance_number}"
         x, y = _spawn_xy(
             local_index, vehicle_count, origin_x, origin_y, spacing_x, spacing_y, grid_cols
         )
         drones.append(
             {
-                "id": f"uav_{instance_number}",
-                "namespace": f"uav_{instance_number}",
-                "role": "leader" if instance_number == 1 else "follower",
+                "id": drone_id,
+                "namespace": drone_id,
+                "role": "leader" if drone_id == leader_id else "follower",
                 "system_id": instance_number + 1,
                 "px4_topic_prefix": f"px4_{instance_number}",
                 "initial_position": [x, y, default_z],
             }
         )
 
-    swarm["leader_id"] = f"uav_{instance_start}"
+    swarm["leader_id"] = leader_id
     swarm["drones"] = drones
     generated["swarm"] = swarm
 

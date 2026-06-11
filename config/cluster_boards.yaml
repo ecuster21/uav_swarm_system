@@ -1,0 +1,39 @@
+# 11 块 RK3588 开发板的 SSH 一键启动配置。
+# 编号规则：
+# - 192.168.1.40 -> uav_1  ~ uav_4,  px4_1  ~ px4_4,  MAV_SYS_ID 2  ~ 5
+# - 192.168.1.41 -> uav_5  ~ uav_8,  px4_5  ~ px4_8,  MAV_SYS_ID 6  ~ 9
+# - ...
+# - 192.168.1.50 -> uav_41 ~ uav_44, px4_41 ~ px4_44, MAV_SYS_ID 42 ~ 45
+
+cluster:
+  ssh_user: jie
+  controller_ip: 192.168.1.40
+  project_root: /home/jie/uav_swarm_system
+
+  ip_range:
+    start: 192.168.1.40
+    end: 192.168.1.50
+
+  vehicles_per_board: 4
+  model: iris
+
+  ros2:
+    domain_id: 42
+    localhost_only: 0
+    rmw_implementation: rmw_fastrtps_cpp
+
+  network:
+    udp_buffer_bytes: 16777216
+
+  px4_home:
+    lat: 34.566096
+    lon: 110.092301
+    alt: 350
+
+  spawn:
+    origin_x: 0.0
+    origin_y: 3.0
+    vehicle_spacing_x: 0.0
+    vehicle_spacing_y: 30.0
+    board_spacing_x: 0.0
+    board_spacing_y: 120.0
