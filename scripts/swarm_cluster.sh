@@ -10,6 +10,8 @@ LIMIT=""
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
 PX4_WAIT_SEC="${PX4_WAIT_SEC:-25}"
 BRIDGE_WAIT_SEC="${BRIDGE_WAIT_SEC:-8}"
+DISTRIBUTED_FOLLOWERS="${DISTRIBUTED_FOLLOWERS:-false}"
+CONTROLLER_IP_REQUEST="${SWARM_CONTROLLER_IP:-auto}"
 
 SSH_OPTS=(
     -o BatchMode=yes
@@ -25,18 +27,24 @@ usage() {
 Usage:
   ./scripts/swarm_cluster.sh dry-run [--limit N] [--config PATH]
   ./scripts/swarm_cluster.sh check   [--limit N] [--config PATH]
-  ./scripts/swarm_cluster.sh start   [--limit N] [--config PATH] [--run-id ID]
+  ./scripts/swarm_cluster.sh start   [--limit N] [--config PATH] [--run-id ID] [--controller-ip IP|auto|config]
   ./scripts/swarm_cluster.sh stop    [--limit N] [--config PATH]
   ./scripts/swarm_cluster.sh status  [--limit N] [--config PATH]
 
 Environment:
   PX4_WAIT_SEC       Seconds to wait after starting PX4 before bridges. Default: 25
   BRIDGE_WAIT_SEC    Seconds to wait after starting bridges before swarm nodes. Default: 8
+  DISTRIBUTED_FOLLOWERS
+                     true starts per-board local follower controllers. Default: false
+  SWARM_CONTROLLER_IP
+                     auto uses the board running this script as controller when selected.
+                     config uses cluster_boards.yaml. Or set an explicit IP. Default: auto
 
 Examples:
   ./scripts/swarm_cluster.sh dry-run
   ./scripts/swarm_cluster.sh check
   ./scripts/swarm_cluster.sh start --limit 2
+  ./scripts/swarm_cluster.sh start --limit 3 --controller-ip 192.168.1.42
   ./scripts/swarm_cluster.sh status
   ./scripts/swarm_cluster.sh stop
 EOF
@@ -96,6 +104,18 @@ while [[ "$#" -gt 0 ]]; do
             RUN_ID="${1#*=}"
             shift
             ;;
+        --controller-ip)
+            if [[ "$#" -lt 2 ]]; then
+                echo "Missing value for --controller-ip"
+                exit 1
+            fi
+            CONTROLLER_IP_REQUEST="$2"
+            shift 2
+            ;;
+        --controller-ip=*)
+            CONTROLLER_IP_REQUEST="${1#*=}"
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
             usage
@@ -114,7 +134,7 @@ if [[ -n "$LIMIT" ]] && { ! [[ "$LIMIT" =~ ^[0-9]+$ ]] || [[ "$LIMIT" -lt 1 ]]; 
     exit 1
 fi
 
-BOARD_ROWS="$(python3 - "$CONFIG_FILE" "${LIMIT:-0}" <<'PY'
+BOARD_ROWS="$(python3 - "$CONFIG_FILE" "${LIMIT:-0}" "$CONTROLLER_IP_REQUEST" "${LOCAL_IPS[@]}" <<'PY'
 from pathlib import Path
 import ipaddress
 import sys
@@ -123,6 +143,8 @@ import yaml
 
 config_file = Path(sys.argv[1])
 limit = int(sys.argv[2])
+controller_ip_request = str(sys.argv[3]).strip()
+local_ips = set(sys.argv[4:])
 
 with config_file.open("r", encoding="utf-8") as stream:
     data = yaml.safe_load(stream) or {}
@@ -155,7 +177,7 @@ if limit > 0:
     ips = ips[:limit]
 
 ssh_user = str(cluster["ssh_user"])
-controller_ip = str(cluster["controller_ip"])
+configured_controller_ip = str(cluster["controller_ip"])
 project_root = str(cluster["project_root"])
 vehicles_per_board = int(cluster["vehicles_per_board"])
 model = str(cluster["model"])
@@ -191,6 +213,18 @@ if global_spawn_grid_cols <= 0:
         global_spawn_grid_cols = 1
     else:
         global_spawn_grid_cols = total_vehicles
+
+if controller_ip_request in {"", "auto"}:
+    controller_ip = next((ip for ip in ips if ip in local_ips), configured_controller_ip)
+elif controller_ip_request == "config":
+    controller_ip = configured_controller_ip
+else:
+    controller_ip = controller_ip_request
+
+try:
+    ipaddress.ip_address(controller_ip)
+except ValueError as exc:
+    raise SystemExit(f"Invalid controller IP: {controller_ip}") from exc
 
 for board_index, ip in enumerate(ips):
     instance_start = 1 + board_index * vehicles_per_board
@@ -364,6 +398,7 @@ pkill -f '[s]warm_px4_uxrce[.]launch[.]py' 2>/dev/null || true
 pkill -f '[p]x4_bridge_uxrce/.*/px4_uxrce_bridge' 2>/dev/null || true
 pkill -f '[s]warm_manager/.*/swarm_manager' 2>/dev/null || true
 pkill -f '[f]ormation_controller/.*/formation_controller' 2>/dev/null || true
+pkill -f '[f]ormation_controller/.*/local_follower_controller' 2>/dev/null || true
 pkill -f '[M]icroXRCEAgent.*udp4.*-p 8888' 2>/dev/null || true
 ./scripts/stop_sitl_stack.sh >/dev/null 2>&1 || true
 EOF
@@ -425,11 +460,16 @@ remote_start_bridge_command() {
     local log_dir="$2"
     local instance_start="$3"
     local vehicle_count="$4"
-    local spawn_x="$5"
-    local spawn_y="$6"
-    local spacing_x="$7"
-    local spacing_y="$8"
-    local spawn_grid_cols="$9"
+    local total_vehicles="$5"
+    local spawn_x="$6"
+    local spawn_y="$7"
+    local spacing_x="$8"
+    local spacing_y="$9"
+    local spawn_grid_cols="${10:-}"
+    if [[ -z "$spawn_grid_cols" ]]; then
+        echo "remote_start_bridge_command missing spawn_grid_cols" >&2
+        exit 1
+    fi
 
     cat <<EOF
 set -eo pipefail
@@ -439,8 +479,11 @@ mkdir -p $(quote "$log_dir")
 source scripts/setup_env.sh >/dev/null
 setsid bash -lc 'source scripts/setup_env.sh >/dev/null; ros2 launch swarm_bringup swarm_px4_uxrce.launch.py \
   instance_start:=$(quote "$instance_start") vehicle_count:=$(quote "$vehicle_count") \
-  enable_swarm_nodes:=false \
-  spawn_origin_x:=$(quote "$spawn_x") spawn_origin_y:=$(quote "$spawn_y") \
+  swarm_vehicle_count:=$(quote "$total_vehicles") \
+	  enable_swarm_nodes:=false \
+	  distributed_followers:=$(quote "$DISTRIBUTED_FOLLOWERS") \
+	  enable_local_follower_controllers:=true \
+	  spawn_origin_x:=$(quote "$spawn_x") spawn_origin_y:=$(quote "$spawn_y") \
   spawn_spacing_x:=$(quote "$spacing_x") spawn_spacing_y:=$(quote "$spacing_y") \
   spawn_grid_cols:=$(quote "$spawn_grid_cols") \
   swarm_config_file:=$(quote "$project_root/config/swarm.yaml") \
@@ -469,9 +512,11 @@ cd $(quote "$project_root")
 mkdir -p $(quote "$log_dir")
 source scripts/setup_env.sh >/dev/null
 setsid bash -lc 'source scripts/setup_env.sh >/dev/null; ros2 launch swarm_bringup swarm_px4_uxrce.launch.py \
-  instance_start:=1 vehicle_count:=$(quote "$total_vehicles") \
-  enable_bridges:=false enable_swarm_nodes:=true \
-  spawn_origin_x:=$(quote "$spawn_x") spawn_origin_y:=$(quote "$spawn_y") \
+	  instance_start:=1 vehicle_count:=$(quote "$total_vehicles") \
+	  enable_bridges:=false enable_swarm_nodes:=true \
+	  distributed_followers:=$(quote "$DISTRIBUTED_FOLLOWERS") \
+	  enable_local_follower_controllers:=false \
+	  spawn_origin_x:=$(quote "$spawn_x") spawn_origin_y:=$(quote "$spawn_y") \
   spawn_spacing_x:=$(quote "$spacing_x") spawn_spacing_y:=$(quote "$spacing_y") \
   spawn_grid_cols:=$(quote "$spawn_grid_cols") \
   swarm_config_file:=$(quote "$project_root/config/swarm.yaml") \
@@ -504,7 +549,7 @@ printf 'agent=%s\\n' "\$(pgrep -af '[M]icroXRCEAgent.*udp4.*-p 8888' | wc -l)"
 printf 'bridge_launch=%s\\n' "\$(pgrep -af 'swarm_px4_uxrce[.]launch[.]py.*enable_swarm_nodes:=false' | wc -l)"
 printf 'swarm_launch=%s\\n' "\$(pgrep -af 'swarm_px4_uxrce[.]launch[.]py.*enable_bridges:=false' | wc -l)"
 printf 'bridge_nodes=%s\\n' "\$(pgrep -af 'px4_bridge_uxrce/.*/px4_uxrce_bridge' | wc -l)"
-printf 'swarm_nodes=%s\\n' "\$(pgrep -af 'swarm_manager/.*/swarm_manager|formation_controller/.*/formation_controller' | wc -l)"
+printf 'swarm_nodes=%s\\n' "\$(pgrep -af 'swarm_manager/.*/swarm_manager|formation_controller/.*/formation_controller|formation_controller/.*/local_follower_controller' | wc -l)"
 echo "--- px4 dds publishers"
 for n in \$(seq $(quote "$instance_start") \$(( $(quote "$instance_start") + $(quote "$vehicle_count") - 1 ))); do
     count=\$(ros2 topic info /px4_\${n}/fmu/out/vehicle_status 2>/dev/null | awk '/Publisher count:/ {print \$3}' || true)
@@ -564,7 +609,7 @@ print_remote_commands() {
         echo "# start bridge:"
         remote_start_bridge_command \
             "$PROJECT_ROOT" "$log_dir" "${BOARD_INSTANCE_STARTS[$i]}" "${BOARD_COUNTS[$i]}" \
-            "${BOARD_SPAWN_XS[$i]}" "${BOARD_SPAWN_YS[$i]}" "${BOARD_SPACING_XS[$i]}" \
+            "$TOTAL_VEHICLES" "${BOARD_SPAWN_XS[$i]}" "${BOARD_SPAWN_YS[$i]}" "${BOARD_SPACING_XS[$i]}" \
             "${BOARD_SPACING_YS[$i]}" "${BOARD_GRID_COLS[$i]}"
     done
     echo
@@ -655,7 +700,7 @@ run_start() {
             ssh_run "${BOARD_USERS[$i]}" "${BOARD_IPS[$i]}" "$(
                 remote_start_bridge_command \
                     "$PROJECT_ROOT" "$log_dir" "${BOARD_INSTANCE_STARTS[$i]}" "${BOARD_COUNTS[$i]}" \
-                    "${BOARD_SPAWN_XS[$i]}" "${BOARD_SPAWN_YS[$i]}" "${BOARD_SPACING_XS[$i]}" \
+                    "$TOTAL_VEHICLES" "${BOARD_SPAWN_XS[$i]}" "${BOARD_SPAWN_YS[$i]}" "${BOARD_SPACING_XS[$i]}" \
                     "${BOARD_SPACING_YS[$i]}" "${BOARD_GRID_COLS[$i]}"
             )"
         ) &

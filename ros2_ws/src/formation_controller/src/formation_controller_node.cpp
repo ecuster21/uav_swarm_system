@@ -226,6 +226,7 @@ public:
     declare_parameter<double>("max_jerk_m_s3", 0.0);
     declare_parameter<double>("low_pass_alpha", -1.0);
     declare_parameter<double>("leader_prediction_horizon_sec", 0.0);
+    declare_parameter<bool>("distributed_followers", false);
 
     const auto swarm_config_file = get_parameter("swarm_config_file").as_string();
     const auto formations_config_file = get_parameter("formations_config_file").as_string();
@@ -266,6 +267,7 @@ public:
     offsets_ = load_or_generate_offsets(formation_section);
     load_waypoints();
     frame_id_ = "local_enu";
+    distributed_followers_ = get_parameter("distributed_followers").as_bool();
 
     control_rate_hz_ = resolve_double(
       "control_rate_hz", yaml_double(controller_section, "control_rate_hz", 10.0), 1.0);
@@ -283,6 +285,7 @@ public:
       target_publishers_[drone.drone_id] = create_publisher<FormationTarget>(
         "/" + drone.drone_namespace + "/formation_target", 10);
     }
+    leader_reference_pub_ = create_publisher<FormationTarget>("/swarm/leader_reference", 10);
 
     swarm_sub_ = create_subscription<SwarmState>(
       "/swarm/state", 10,
@@ -299,9 +302,10 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "Formation controller ready: formation_type=%s, leader=%s, frame=%s, mode=%s, offset_frame=%s, yaw_mode=%s, rate=%.1f Hz",
+      "Formation controller ready: formation_type=%s, leader=%s, frame=%s, mode=%s, offset_frame=%s, yaw_mode=%s, rate=%.1f Hz, distributed_followers=%s",
       formation_type_.c_str(), leader_id_.c_str(), frame_id_.c_str(), control_mode_.c_str(),
-      offset_frame_.c_str(), yaw_mode_.c_str(), control_rate_hz_);
+      offset_frame_.c_str(), yaw_mode_.c_str(), control_rate_hz_,
+      distributed_followers_ ? "true" : "false");
   }
 
 private:
@@ -642,13 +646,17 @@ private:
     // leader 状态不可用时，全队进入 hold，避免 follower 追逐过期目标。
     const auto * leader_state = find_state(leader_id_);
     if (!state_is_usable(leader_state)) {
+      publish_inactive_leader_reference("leader_state_lost");
       publish_leader_lost_hold();
       return;
     }
 
     std::map<std::string, Point> planned_targets;
     publish_leader_target(*leader_state, planned_targets);
-    publish_follower_targets(*leader_state, planned_targets);
+    publish_leader_reference(*leader_state);
+    if (!distributed_followers_) {
+      publish_follower_targets(*leader_state, planned_targets);
+    }
   }
 
   void publish_leader_target(
@@ -676,6 +684,34 @@ private:
     publish_target(
       leader_id_, target, velocity, use_velocity_targets_,
       "formation_controller.leader_waypoints", true, yaw_for_velocity(velocity));
+  }
+
+  void publish_leader_reference(const DroneState & leader_state)
+  {
+    FormationTarget msg{};
+    msg.header.stamp = now();
+    msg.header.frame_id = frame_id_;
+    msg.drone_id = leader_id_;
+    msg.source = "formation_controller.leader_reference";
+    msg.position = predict_position(leader_state);
+    msg.velocity = leader_state.velocity;
+    msg.yaw = leader_state.yaw;
+    msg.use_velocity = true;
+    msg.active = true;
+    leader_reference_pub_->publish(msg);
+  }
+
+  void publish_inactive_leader_reference(const std::string & reason)
+  {
+    FormationTarget msg{};
+    msg.header.stamp = now();
+    msg.header.frame_id = frame_id_;
+    msg.drone_id = leader_id_;
+    msg.source = "formation_controller.leader_reference_inactive:" + reason;
+    msg.yaw = leader_yaw_;
+    msg.use_velocity = false;
+    msg.active = false;
+    leader_reference_pub_->publish(msg);
   }
 
   void publish_follower_targets(
@@ -957,6 +993,9 @@ private:
   void publish_leader_lost_hold()
   {
     for (const auto & drone : drone_configs_) {
+      if (distributed_followers_ && drone.drone_id != leader_id_) {
+        continue;
+      }
       const auto * state = find_state(drone.drone_id);
       if (state_is_usable(state)) {
         publish_hold(drone.drone_id, state, "leader_state_lost");
@@ -1062,6 +1101,7 @@ private:
   double acceptance_radius_{0.45};
   double leader_state_timeout_sec_{2.0};
   double leader_prediction_horizon_sec_{1.0};
+  bool distributed_followers_{false};
   std::string control_mode_{"position_velocity"};
   std::string offset_frame_{"body_forward_right_up"};
   std::string yaw_mode_{"fixed"};
@@ -1074,6 +1114,7 @@ private:
   std::map<std::string, ControlHistory> control_history_by_drone_;
   std::map<std::string, std::string> last_hold_reason_by_drone_;
   std::map<std::string, rclcpp::Publisher<FormationTarget>::SharedPtr> target_publishers_;
+  rclcpp::Publisher<FormationTarget>::SharedPtr leader_reference_pub_;
   rclcpp::Subscription<SwarmState>::SharedPtr swarm_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };

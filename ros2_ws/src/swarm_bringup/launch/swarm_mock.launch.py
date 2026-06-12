@@ -31,6 +31,12 @@ def _as_float(value: str, default: float) -> float:
     return float(value)
 
 
+def _as_bool(value: str, default: bool) -> bool:
+    if value is None or str(value).strip() == "":
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _default_grid_cols(vehicle_count: int) -> int:
     return max(1, math.ceil(math.sqrt(vehicle_count)))
 
@@ -62,6 +68,7 @@ def _generate_swarm_config(
     spacing_x: float,
     spacing_y: float,
     grid_cols: int,
+    preserve_configured_leader: bool = False,
 ) -> tuple[dict, str | None]:
     if vehicle_count <= 0:
         return swarm_data, None
@@ -79,7 +86,10 @@ def _generate_swarm_config(
             default_z = float(default_position[2])
 
     generated_ids = {f"uav_{instance_number}" for instance_number in range(1, vehicle_count + 1)}
-    leader_id = configured_leader_id if configured_leader_id in generated_ids else "uav_1"
+    if preserve_configured_leader and configured_leader_id:
+        leader_id = configured_leader_id
+    else:
+        leader_id = configured_leader_id if configured_leader_id in generated_ids else "uav_1"
 
     drones = []
     for instance_number in range(1, vehicle_count + 1):
@@ -116,12 +126,22 @@ def _launch_setup(context, *args, **kwargs):
     waypoints_config_file = LaunchConfiguration("waypoints_config_file").perform(context)
     formation_type = LaunchConfiguration("formation_type").perform(context)
     vehicle_count = _as_int(LaunchConfiguration("vehicle_count").perform(context), 0)
+    swarm_vehicle_count = _as_int(
+        LaunchConfiguration("swarm_vehicle_count").perform(context), 0
+    )
+    distributed_followers = _as_bool(
+        LaunchConfiguration("distributed_followers").perform(context), False
+    )
+    enable_local_follower_controllers = _as_bool(
+        LaunchConfiguration("enable_local_follower_controllers").perform(context), True
+    )
     spawn_origin_x = _as_float(LaunchConfiguration("spawn_origin_x").perform(context), 0.0)
     spawn_origin_y = _as_float(LaunchConfiguration("spawn_origin_y").perform(context), 0.0)
     spawn_spacing_x = _as_float(LaunchConfiguration("spawn_spacing_x").perform(context), 3.0)
     spawn_spacing_y = _as_float(LaunchConfiguration("spawn_spacing_y").perform(context), 3.0)
     spawn_grid_cols = _as_int(LaunchConfiguration("spawn_grid_cols").perform(context), 0)
-    swarm_data = _load_yaml(swarm_config_file)
+    source_swarm_data = _load_yaml(swarm_config_file)
+    swarm_data = source_swarm_data
     swarm_data, runtime_swarm_config_file = _generate_swarm_config(
         swarm_data,
         vehicle_count,
@@ -130,8 +150,22 @@ def _launch_setup(context, *args, **kwargs):
         spawn_spacing_x,
         spawn_spacing_y,
         spawn_grid_cols,
+        preserve_configured_leader=distributed_followers,
     )
     effective_swarm_config_file = runtime_swarm_config_file or swarm_config_file
+    local_follower_swarm_config_file = effective_swarm_config_file
+    if distributed_followers and swarm_vehicle_count > 0:
+        _, runtime_full_swarm_config_file = _generate_swarm_config(
+            source_swarm_data,
+            swarm_vehicle_count,
+            spawn_origin_x,
+            spawn_origin_y,
+            spawn_spacing_x,
+            spawn_spacing_y,
+            spawn_grid_cols,
+            preserve_configured_leader=True,
+        )
+        local_follower_swarm_config_file = runtime_full_swarm_config_file or swarm_config_file
     swarm = swarm_data.get("swarm", {})
     mock_backend = swarm_data.get("mock_backend", {})
     drones = swarm.get("drones", [])
@@ -194,11 +228,37 @@ def _launch_setup(context, *args, **kwargs):
                         "formations_config_file": formations_config_file,
                         "waypoints_config_file": waypoints_config_file,
                         "formation_type": formation_type,
+                        "distributed_followers": distributed_followers,
                     }
                 ],
             ),
         ]
     )
+    if distributed_followers and enable_local_follower_controllers:
+        leader_id = str(swarm.get("leader_id", ""))
+        for drone in drones:
+            drone_id = str(drone["id"])
+            if drone_id == leader_id or str(drone.get("role", "")).lower() == "leader":
+                continue
+            namespace = _normalize_namespace(str(drone.get("namespace", drone_id)))
+            actions.append(
+                Node(
+                    package="formation_controller",
+                    executable="local_follower_controller",
+                    namespace=namespace,
+                    name="local_follower_controller",
+                    output="screen",
+                    parameters=[
+                        {
+                            "drone_id": drone_id,
+                            "leader_id": leader_id,
+                            "swarm_config_file": local_follower_swarm_config_file,
+                            "formations_config_file": formations_config_file,
+                            "formation_type": formation_type,
+                        }
+                    ],
+                )
+            )
 
     return actions
 
@@ -235,6 +295,21 @@ def generate_launch_description() -> LaunchDescription:
                 "vehicle_count",
                 default_value="0",
                 description="Generate uav_1..uav_N at launch time when > 0; 0 uses swarm.yaml",
+            ),
+            DeclareLaunchArgument(
+                "swarm_vehicle_count",
+                default_value="0",
+                description="Full swarm size used by local follower controllers when distributed_followers is true",
+            ),
+            DeclareLaunchArgument(
+                "distributed_followers",
+                default_value="false",
+                description="Start per-follower local_follower_controller nodes and stop central follower target publication",
+            ),
+            DeclareLaunchArgument(
+                "enable_local_follower_controllers",
+                default_value="true",
+                description="When distributed_followers is true, start local follower target calculators for follower drones in this launch",
             ),
             DeclareLaunchArgument(
                 "spawn_origin_x",

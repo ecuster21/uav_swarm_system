@@ -10,7 +10,10 @@
 - Gazebo Classic 11.10.2 headless SITL
 - Micro-XRCE-DDS-Agent 2.4.1
 - 单板 3 架 `iris` PX4 SITL OFFBOARD 编队
-- 两块 RK3588 分布式运行 PX4 SITL，并统一接入 Windows QGroundControl
+- 3 块 RK3588 / 12 架 `iris` 分布式 PX4 SITL 编队
+- 11 块 RK3588 / 44 架 `iris` 的 SSH 编排、项目同步和环境检查
+- 分布式 follower target 计算：每架 follower 本机运行 `local_follower_controller`
+- 任意一块已选开发板可作为主控板启动 `/swarm/manager` 和 `/swarm/formation_controller`
 
 详细原理和调试记录放在 `docs/`，README 只保留日常最常用入口。
 
@@ -27,8 +30,9 @@
 | MicroXRCEAgent | `/usr/local/bin/MicroXRCEAgent`, `2.4.1` |
 | QGroundControl | Windows 主机运行 |
 | Windows GCS IP | `192.168.1.20` |
-| RK3588 A | `192.168.1.40` |
-| RK3588 B | `192.168.1.41` |
+| RK3588 集群 | `192.168.1.40` ~ `192.168.1.50` |
+| 每板 SITL 数量 | 默认 4 架 |
+| 集群默认规模 | 11 板 / 44 架 |
 
 约束：
 
@@ -62,6 +66,8 @@ uav_swarm_system/
     ├── start_px4_multi_sitl.sh
     ├── stop_sitl_stack.sh
     ├── swarm_cluster.sh
+    ├── swarm_sync_project.sh
+    ├── swarm_check_project_hash.sh
     ├── swarm_arm_takeoff.sh
     ├── swarm_land_all.sh
     └── swarm_status_once.sh
@@ -327,103 +333,118 @@ source scripts/setup_env.sh
 ./scripts/stop_sitl_stack.sh
 ```
 
-## 两块板分布式 SITL
+## 分布式编队控制模式
 
-核心原则：
+当前推荐模式是分布式 follower target 计算：
 
 ```text
 每架飞机一份 /uav_N/px4_bridge
+每架 follower 一份 /uav_N/local_follower_controller
 整个集群一份 /swarm/manager
 整个集群一份 /swarm/formation_controller
 ```
 
-固定映射：
+控制链路：
 
 ```text
-板子   IP             PX4_INSTANCE_START   ROS2 instance_start   ROS2 ID   PX4话题   QGC身份
-A      192.168.1.40   1                    1                     uav_1    px4_1    MAV_SYS_ID 2
-B      192.168.1.41   2                    2                     uav_2    px4_2    MAV_SYS_ID 3
+/swarm/formation_controller
+  发布 leader 自身目标 /uav_1/formation_target
+  发布 leader reference /swarm/leader_reference
+
+/uav_N/local_follower_controller
+  订阅 /swarm/leader_reference
+  订阅 /swarm/state 作为备份 leader reference 来源
+  订阅本机 /uav_N/state
+  本机计算并发布 /uav_N/formation_target
+
+/uav_N/px4_bridge
+  订阅 /uav_N/formation_target
+  向本机 PX4 发布 Offboard setpoint
 ```
 
-两块板都先启动本机 MicroXRCEAgent：
+这样做的目的：
+
+- 主控板不再集中计算所有 follower 的目标点，减少单点控制压力。
+- follower 的目标计算下沉到本机开发板，后续真机部署更接近“每机自治”。
+- `/swarm/leader_reference` 异常时，follower 可从 `/swarm/state` 提取 leader 状态继续生成目标。
+
+如果目标正常，`/uav_N/formation_target` 应类似：
+
+```text
+source: local_follower_controller.triangle
+active: true
+```
+
+如果看到：
+
+```text
+source: local_follower_controller.hold:leader_reference_missing
+source: local_follower_controller.hold:leader_reference_inactive
+source: local_follower_controller.hold:leader_reference_stale
+```
+
+优先检查 `/swarm/leader_reference`、`/swarm/state`、DDS 网络和各板时间同步。
+
+## 项目同步和一致性检查
+
+目标是所有开发板的项目环境一致，任意一块板都可以执行相同操作。
+
+从当前板同步项目源码、配置、脚本和文档到集群其它板：
 
 ```bash
 cd /home/jie/uav_swarm_system
-./scripts/start_micro_xrce_agent.sh
+./scripts/swarm_sync_project.sh
 ```
 
-### A 板
-
-PX4/Gazebo：
+同步后检查所有板项目源文件是否一致：
 
 ```bash
-PX4_HOME_LAT=34.566096 PX4_HOME_LON=110.092301 PX4_HOME_ALT=350 \
-PX4_INSTANCE_START=1 PX4_SPAWN_X=0 PX4_SPAWN_Y=3 \
-  ./scripts/start_px4_multi_sitl.sh 1 iris
+./scripts/swarm_check_project_hash.sh
 ```
 
-bridge：
+只同步或检查前 3 块板：
 
 ```bash
-source scripts/setup_env.sh
-ros2 launch swarm_bringup swarm_px4_uxrce.launch.py \
-  instance_start:=1 vehicle_count:=1 \
-  enable_swarm_nodes:=false \
-  spawn_origin_x:=0 spawn_origin_y:=3
+./scripts/swarm_sync_project.sh --limit 3
+./scripts/swarm_check_project_hash.sh --limit 3
 ```
 
-### B 板
+同步时会排除运行产物和大目录：
 
-PX4/Gazebo：
-
-```bash
-PX4_HOME_LAT=34.566096 PX4_HOME_LON=110.092301 PX4_HOME_ALT=350 \
-PX4_INSTANCE_START=2 PX4_SPAWN_X=30 PX4_SPAWN_Y=3 \
-  ./scripts/start_px4_multi_sitl.sh 1 iris
+```text
+.git
+references
+ros2_ws/build
+ros2_ws/install
+ros2_ws/log
+logs
+__pycache__
+*.pyc
 ```
 
-bridge：
+修改 `ros2_ws/src` 下代码后，同步源码并在远端构建：
 
 ```bash
-source scripts/setup_env.sh
-ros2 launch swarm_bringup swarm_px4_uxrce.launch.py \
-  instance_start:=2 vehicle_count:=1 \
-  enable_swarm_nodes:=false \
-  spawn_origin_x:=30 spawn_origin_y:=3
+./scripts/swarm_sync_project.sh --build
 ```
 
-### 只在 A 板启动集群节点
+也可以只同步，然后在需要的板上手动构建：
 
 ```bash
-source scripts/setup_env.sh
-ros2 launch swarm_bringup swarm_px4_uxrce.launch.py \
-  instance_start:=1 vehicle_count:=2 \
-  enable_bridges:=false enable_swarm_nodes:=true \
-  spawn_origin_x:=0 spawn_origin_y:=3 \
-  spawn_spacing_x:=30 spawn_spacing_y:=0
-```
-
-起飞：
-
-```bash
-./scripts/swarm_arm_takeoff.sh uav_1 uav_2
-```
-
-降落：
-
-```bash
-./scripts/swarm_land_all.sh uav_1 uav_2
+cd /home/jie/uav_swarm_system/ros2_ws
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install
 ```
 
 ## 11 块板 SSH 一键启动
 
-当开发板镜像一致、项目路径一致、只有 IP 不同时，推荐使用集中编排脚本：
+当开发板镜像一致、项目路径一致、只有 IP 不同时，推荐使用集群编排脚本：
 
 ```bash
 cd /home/jie/uav_swarm_system
 ./scripts/swarm_cluster.sh dry-run
 ./scripts/swarm_cluster.sh check
-./scripts/swarm_cluster.sh start
+DISTRIBUTED_FOLLOWERS=true ./scripts/swarm_cluster.sh start
 ```
 
 默认配置文件：
@@ -439,16 +460,16 @@ IP: 192.168.1.40 ~ 192.168.1.50
 SSH user: jie
 每板: 4 架 PX4 SITL
 总数: 44 架
-主控板: 192.168.1.40
+主控板: 默认 auto，即在哪块已选板运行脚本，哪块板作为主控
 ```
 
 编号规则：
 
 ```text
-192.168.1.40 -> uav_1  ~ uav_4,  px4_1  ~ px4_4,  MAV_SYS_ID 2  ~ 5,  spawn_x=0
-192.168.1.41 -> uav_5  ~ uav_8,  px4_5  ~ px4_8,  MAV_SYS_ID 6  ~ 9,  spawn_x=40
+192.168.1.40 -> uav_1  ~ uav_4,  px4_1  ~ px4_4,  MAV_SYS_ID 2  ~ 5,  spawn_y=3
+192.168.1.41 -> uav_5  ~ uav_8,  px4_5  ~ px4_8,  MAV_SYS_ID 6  ~ 9,  spawn_y=123
 ...
-192.168.1.50 -> uav_41 ~ uav_44, px4_41 ~ px4_44, MAV_SYS_ID 42 ~ 45, spawn_x=400
+192.168.1.50 -> uav_41 ~ uav_44, px4_41 ~ px4_44, MAV_SYS_ID 42 ~ 45, spawn_y=1203
 ```
 
 脚本动作：
@@ -457,21 +478,34 @@ SSH user: jie
 |---|---|
 | `./scripts/swarm_cluster.sh dry-run` | 打印 11 块板映射和远程命令，不启动 |
 | `./scripts/swarm_cluster.sh check` | 检查 SSH、项目路径、PX4、ROS2、MicroXRCEAgent |
-| `./scripts/swarm_cluster.sh start` | 并发启动所有板子的 Agent、PX4/Gazebo、bridge，并在 A 板启动 swarm 节点 |
+| `DISTRIBUTED_FOLLOWERS=true ./scripts/swarm_cluster.sh start` | 并发启动所有板子的 Agent、PX4/Gazebo、bridge、local follower，并在主控板启动 swarm 节点 |
 | `./scripts/swarm_cluster.sh status` | 查看各板进程状态 |
 | `./scripts/swarm_cluster.sh stop` | 停止各板 PX4/Gazebo、MicroXRCEAgent 和 swarm launch |
 
-先用两块板验证：
+先用 3 块板验证：
 
 ```bash
-./scripts/swarm_cluster.sh start --limit 2
-./scripts/swarm_cluster.sh status --limit 2
+DISTRIBUTED_FOLLOWERS=true ./scripts/swarm_cluster.sh start --limit 3
+./scripts/swarm_cluster.sh status --limit 3
+./scripts/swarm_arm_takeoff.sh --count 12
+```
+
+显式指定某块板做主控：
+
+```bash
+DISTRIBUTED_FOLLOWERS=true ./scripts/swarm_cluster.sh start --limit 3 --controller-ip 192.168.1.42
+```
+
+使用 `config/cluster_boards.yaml` 中的固定主控：
+
+```bash
+DISTRIBUTED_FOLLOWERS=true ./scripts/swarm_cluster.sh start --limit 3 --controller-ip config
 ```
 
 确认无误后启动完整 11 板：
 
 ```bash
-./scripts/swarm_cluster.sh start
+DISTRIBUTED_FOLLOWERS=true ./scripts/swarm_cluster.sh start
 ./scripts/swarm_cluster.sh status
 ```
 
@@ -489,10 +523,10 @@ SSH user: jie
 
 使用前提：
 
-- A 板到其他 10 块板已经配置 `jie` 用户免密 SSH。
+- 任意作为主控或执行集群脚本的板，到其它板都已经配置 `jie` 用户免密 SSH。
 - 所有板项目路径都是 `/home/jie/uav_swarm_system`。
 - 所有板 ROS2 DDS 网络互通，`ROS_DOMAIN_ID` 保持一致。
-- 只在 A 板启动一份 `/swarm/manager` 和 `/swarm/formation_controller`。
+- 全集群只启动一份 `/swarm/manager` 和 `/swarm/formation_controller`。
 
 ## 多机 spawn 对齐规则
 
@@ -507,7 +541,7 @@ PX4_SPAWN_X/Y           == ROS2 spawn_origin_x/y
 PX4_SPAWN_X/Y_STEP      == ROS2 spawn_spacing_x/y
 ```
 
-例如 B 板从 instance 2 开始启动 3 架：
+例如某块 worker 板从 instance 2 开始启动 3 架：
 
 ```bash
 PX4_HOME_LAT=34.566096 PX4_HOME_LON=110.092301 PX4_HOME_ALT=350 \
@@ -563,18 +597,26 @@ PX4_HOME_ALT
 ros2 node list | sort
 ```
 
-分布式两板期望只有一份：
+全集群期望只有一份：
 
 ```text
 /swarm/manager
 /swarm/formation_controller
 ```
 
-每架飞机各有一份：
+每架飞机各有一份 bridge：
 
 ```text
 /uav_1/px4_bridge
 /uav_2/px4_bridge
+```
+
+除 leader 外，每架 follower 各有一份本机 follower controller：
+
+```text
+/uav_2/local_follower_controller
+/uav_3/local_follower_controller
+...
 ```
 
 PX4 DDS 话题：
@@ -587,8 +629,8 @@ ros2 topic list | grep '/px4_'
 
 ```bash
 ros2 topic echo /swarm/state --once
+ros2 topic echo /swarm/leader_reference --once
 ros2 topic echo /uav_1/state --once
-ros2 topic echo /uav_2/state --once
 ros2 topic echo /uav_1/formation_target --once
 ros2 topic echo /uav_2/formation_target --once
 ```
@@ -596,11 +638,26 @@ ros2 topic echo /uav_2/formation_target --once
 如果目标是：
 
 ```text
-active: false
-source: formation_controller.hold:px4_state_unhealthy
+source: local_follower_controller.triangle
+active: true
 ```
 
-优先检查是否重复启动了 `/swarm/manager` 或 `/swarm/formation_controller`，以及 `PX4_INSTANCE_START` 和 ROS2 `instance_start` 是否对齐。
+如果 follower target 是 hold，优先看原因：
+
+```text
+local_follower_controller.hold:own_state_unhealthy
+local_follower_controller.hold:leader_reference_missing
+local_follower_controller.hold:leader_reference_inactive
+local_follower_controller.hold:leader_reference_stale
+```
+
+常见检查顺序：
+
+- 是否重复启动了 `/swarm/manager` 或 `/swarm/formation_controller`。
+- `PX4_INSTANCE_START` 和 ROS2 `instance_start` 是否对齐。
+- `/swarm/leader_reference` 和 `/swarm/state` 是否能在 follower 所在板 echo 到。
+- 各板 `ROS_DOMAIN_ID`、`ROS_LOCALHOST_ONLY`、`RMW_IMPLEMENTATION` 是否一致。
+- 各板系统时间是否同步。
 
 ## 核心话题和服务
 
@@ -610,6 +667,7 @@ source: formation_controller.hold:px4_state_unhealthy
 | `/px4_N/fmu/in/*` | PX4 uXRCE-DDS 输入 |
 | `/uav_N/state` | 单机状态 |
 | `/swarm/state` | 集群状态 |
+| `/swarm/leader_reference` | leader 状态/参考轨迹，供本机 follower controller 使用 |
 | `/uav_N/formation_target` | 编队目标 |
 | `/uav_N/arm` | 解锁服务 |
 | `/uav_N/takeoff` | 起飞服务 |

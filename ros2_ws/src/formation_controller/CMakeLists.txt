@@ -21,7 +21,17 @@ ament_target_dependencies(
 target_link_libraries(formation_controller yaml-cpp)
 target_compile_features(formation_controller PUBLIC cxx_std_17)
 
-install(TARGETS formation_controller
+add_executable(local_follower_controller src/local_follower_controller_node.cpp)
+ament_target_dependencies(
+  local_follower_controller
+  geometry_msgs
+  rclcpp
+  swarm_msgs
+)
+target_link_libraries(local_follower_controller yaml-cpp)
+target_compile_features(local_follower_controller PUBLIC cxx_std_17)
+
+install(TARGETS formation_controller local_follower_controller
   DESTINATION lib/${PROJECT_NAME}
 )
 
